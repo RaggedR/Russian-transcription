@@ -3,8 +3,13 @@ import type { ProgressState, VideoChunk, SessionResponse, ChunkResponse, LoadMor
 // API base URL - uses environment variable in production, relative path in development
 export const API_BASE_URL = import.meta.env.VITE_API_URL || '';
 
-// SSE connects directly to backend to avoid proxy buffering issues
-export const SSE_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+// SSE connects directly to backend
+// In production (no VITE_API_URL), use current origin since frontend is served from same server
+// In development, use localhost:3001 to bypass Vite proxy buffering
+export const SSE_BASE_URL = import.meta.env.VITE_API_URL ||
+  (typeof window !== 'undefined' && window.location.hostname !== 'localhost'
+    ? window.location.origin
+    : 'http://localhost:3001');
 
 export async function apiRequest<T>(
   endpoint: string,
@@ -35,7 +40,7 @@ export interface AnalysisCompleteData {
 }
 
 export interface ProgressEvent {
-  type: 'audio' | 'transcription' | 'video' | 'complete' | 'error' | 'connected';
+  type: 'audio' | 'transcription' | 'punctuation' | 'video' | 'complete' | 'error' | 'connected';
   progress: number;
   status: 'active' | 'complete' | 'error';
   message?: string;
@@ -54,7 +59,8 @@ export function subscribeToProgress(
   sessionId: string,
   onProgress: (progress: ProgressState) => void,
   onComplete: (data: AnalysisCompleteData) => void,
-  onError: (error: string) => void
+  onError: (error: string) => void,
+  onConnected?: () => void
 ): () => void {
   let eventSource: EventSource | null = null;
   let pollInterval: ReturnType<typeof setInterval> | null = null;
@@ -84,7 +90,8 @@ export function subscribeToProgress(
         const data: ProgressEvent = JSON.parse(event.data);
 
         if (data.type === 'connected') {
-          return; // Initial connection event
+          onConnected?.();
+          return;
         }
 
         if (data.type === 'complete') {
@@ -109,7 +116,7 @@ export function subscribeToProgress(
         }
 
         // Progress update
-        if (data.type === 'audio' || data.type === 'transcription' || data.type === 'video') {
+        if (data.type === 'audio' || data.type === 'transcription' || data.type === 'punctuation' || data.type === 'video') {
           onProgress({
             type: data.type,
             progress: data.progress,
@@ -151,6 +158,7 @@ export function subscribeToProgress(
           title?: string;
           totalDuration?: number;
           chunks?: VideoChunk[];
+          hasMoreChunks?: boolean;
           error?: string;
           progress?: { audio: number; transcription: number };
         }>(`/api/session/${sessionId}`);
@@ -225,5 +233,15 @@ export async function loadMoreChunks(sessionId: string): Promise<LoadMoreRespons
   return apiRequest<LoadMoreResponse>('/api/load-more-chunks', {
     method: 'POST',
     body: JSON.stringify({ sessionId }),
+  });
+}
+
+/**
+ * Delete a session and all its associated videos from storage
+ * Call this when done with a video to clean up GCS storage
+ */
+export async function deleteSession(sessionId: string): Promise<{ success: boolean }> {
+  return apiRequest<{ success: boolean }>(`/api/session/${sessionId}`, {
+    method: 'DELETE',
   });
 }

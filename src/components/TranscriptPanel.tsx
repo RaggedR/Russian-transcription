@@ -81,10 +81,13 @@ export function TranscriptPanel({
 
   const handleWordClick = useCallback(
     async (word: WordTimestamp, event: React.MouseEvent) => {
-      // Only translate Russian words (no longer seeks video)
+      // Only handle Russian words
       if (!isRussianWord(word.word)) {
         return;
       }
+
+      // Seek video to this word's timestamp
+      onWordClick(word);
 
       // Show translation popup
       setSelectedWord(word);
@@ -109,7 +112,7 @@ export function TranscriptPanel({
         setIsTranslating(false);
       }
     },
-    [config.googleApiKey]
+    [config.googleApiKey, onWordClick]
   );
 
   const handleClosePopup = useCallback(() => {

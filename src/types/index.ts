@@ -74,7 +74,7 @@ export interface ChunkResponse {
 }
 
 export interface ProgressState {
-  type: 'audio' | 'transcription' | 'video';
+  type: 'audio' | 'transcription' | 'punctuation' | 'video';
   progress: number;      // 0-100
   status: 'active' | 'complete' | 'error';
   message?: string;

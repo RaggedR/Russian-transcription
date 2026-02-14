@@ -7,12 +7,14 @@ interface ProgressBarProps {
 const typeLabels: Record<ProgressState['type'], string> = {
   audio: 'Audio',
   transcription: 'Transcription',
+  punctuation: 'Punctuation',
   video: 'Video',
 };
 
 const typeColors: Record<ProgressState['type'], string> = {
   audio: 'bg-blue-500',
   transcription: 'bg-green-500',
+  punctuation: 'bg-yellow-500',
   video: 'bg-purple-500',
 };
 
