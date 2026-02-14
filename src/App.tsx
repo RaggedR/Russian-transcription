@@ -86,7 +86,14 @@ function App() {
 
   const handleSelectChunk = useCallback(async (chunk: VideoChunk, sessionIdOverride?: string) => {
     const activeSessionId = sessionIdOverride || sessionId;
-    if (!activeSessionId) return;
+    if (!activeSessionId) {
+      console.error('[handleSelectChunk] No sessionId available');
+      setError('Session expired. Please analyze the video again.');
+      setView('input');
+      return;
+    }
+
+    console.log(`[handleSelectChunk] Selecting chunk ${chunk.id}, status: ${chunk.status}`);
 
     // Clean up any existing SSE subscription
     if (progressCleanupRef.current) {
@@ -96,48 +103,58 @@ function App() {
 
     // If chunk is already ready, fetch and play immediately
     if (chunk.status === 'ready') {
+      console.log(`[handleSelectChunk] Chunk ready, fetching from GET /api/session/${activeSessionId}/chunk/${chunk.id}`);
       try {
         const data = await getChunk(activeSessionId, chunk.id);
+        console.log('[handleSelectChunk] Got chunk data:', { videoUrl: data.videoUrl?.slice(0, 50), title: data.title });
         setVideoUrl(data.videoUrl);
         setTranscript(data.transcript);
         setVideoTitle(data.title);
         setCurrentTime(0);
         setView('player');
       } catch (err) {
+        console.error('[handleSelectChunk] Error fetching ready chunk:', err);
         setError(err instanceof Error ? err.message : 'Failed to load chunk');
+        setView('chunk-menu');
       }
       return;
     }
 
     // Need to download the chunk
+    console.log(`[handleSelectChunk] Chunk not ready, downloading via POST /api/download-chunk`);
     setLoadingChunkIndex(chunk.index);
     setView('loading-chunk');
     setError(null);
     setProgress([
-      { type: 'video', progress: 0, status: 'active', message: 'Starting... (please wait)' },
+      { type: 'video', progress: 0, status: 'active', message: 'Starting download...' },
     ]);
 
-    // Subscribe to progress for this download
-    const cleanup = subscribeToProgress(
-      activeSessionId,
-      (progressUpdate) => {
-        if (progressUpdate.type === 'video') {
-          setProgress([progressUpdate]);
-        }
-      },
-      () => {
-        // Not used for chunk downloads
-      },
-      (errorMessage) => {
-        setError(errorMessage);
-        setView('chunk-menu');
-        setProgress([]);
-      }
-    );
-
-    progressCleanupRef.current = cleanup;
+    // Subscribe to progress and wait for SSE connection before starting download
+    // This prevents race condition where progress events are lost
+    const connectedPromise = new Promise<void>((resolve) => {
+      const cleanup = subscribeToProgress(
+        activeSessionId,
+        (progressUpdate) => {
+          if (progressUpdate.type === 'video') {
+            setProgress([progressUpdate]);
+          }
+        },
+        () => {
+          // Not used for chunk downloads
+        },
+        (errorMessage) => {
+          setError(errorMessage);
+          setView('chunk-menu');
+          setProgress([]);
+        },
+        () => resolve() // onConnected callback
+      );
+      progressCleanupRef.current = cleanup;
+    });
 
     try {
+      // Wait for SSE connection before starting download
+      await connectedPromise;
       const data = await downloadChunk(activeSessionId, chunk.id);
 
       // Update chunk status in local state
@@ -161,10 +178,12 @@ function App() {
       setProgress([]);
     }
 
-    if (cleanup) cleanup();
   }, [sessionId]);
 
   const handleAnalyze = useCallback(async (url: string) => {
+    // Don't delete previous session - keep it cached for 7 days in case user wants to re-watch
+    // GCS lifecycle policy handles cleanup of old sessions automatically
+
     setView('analyzing');
     setError(null);
     setOriginalUrl(url);
@@ -174,14 +193,50 @@ function App() {
 
     try {
       // Start analysis (backend uses env var for API key)
-      const { sessionId: newSessionId } = await apiRequest<{ sessionId: string }>('/api/analyze', {
+      interface AnalyzeResponse {
+        sessionId: string;
+        status: 'started' | 'cached';
+        title?: string;
+        totalDuration?: number;
+        chunks?: VideoChunk[];
+        hasMoreChunks?: boolean;
+      }
+
+      const response = await apiRequest<AnalyzeResponse>('/api/analyze', {
         method: 'POST',
         body: JSON.stringify({ url }),
       });
 
+      const newSessionId = response.sessionId;
       setSessionId(newSessionId);
 
-      // Subscribe to progress updates
+      // If cached, skip progress updates and go straight to chunk menu
+      if (response.status === 'cached' && response.chunks) {
+        console.log('[handleAnalyze] Using cached session:', newSessionId);
+        setSessionTitle(response.title || 'Cached Video');
+        setSessionTotalDuration(response.totalDuration || 0);
+        setHasMoreChunks(response.hasMoreChunks || false);
+
+        const chunksWithStatus = response.chunks.map(c => ({
+          ...c,
+          status: c.status || 'pending' as const,
+          videoUrl: c.videoUrl || null,
+        }));
+        setSessionChunks(chunksWithStatus);
+        setProgress([]);
+
+        // If only one chunk, auto-select it
+        if (chunksWithStatus.length === 1 && !response.hasMoreChunks) {
+          setTimeout(() => {
+            handleSelectChunk(chunksWithStatus[0], newSessionId);
+          }, 0);
+        } else {
+          setView('chunk-menu');
+        }
+        return;
+      }
+
+      // Subscribe to progress updates for new analysis
       const cleanup = subscribeToProgress(
         newSessionId,
         (progressUpdate) => {
@@ -336,6 +391,9 @@ function App() {
       progressCleanupRef.current();
       progressCleanupRef.current = null;
     }
+
+    // Don't delete session - keep it cached for 7 days in case user wants to re-watch
+    // GCS lifecycle policy handles cleanup of old sessions automatically
 
     setView('input');
     setSessionId(null);

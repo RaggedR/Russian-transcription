@@ -9,7 +9,7 @@ import dotenv from 'dotenv';
 import { Storage } from '@google-cloud/storage';
 import { spawn } from 'child_process';
 import { createChunks, getChunkTranscript, formatTime } from './chunking.js';
-import { downloadAudioChunk, downloadVideoChunk, transcribeAudioChunk } from './media.js';
+import { downloadAudioChunk, downloadVideoChunk, transcribeAudioChunk, addPunctuation, getOkRuVideoInfo } from './media.js';
 
 // Use system yt-dlp binary instead of bundled one (bundled version may be outdated)
 const ytdlp = ytdlpBase.create('yt-dlp');
@@ -42,6 +42,154 @@ const progressClients = new Map();
 // Analysis sessions (for chunking workflow)
 const analysisSessions = new Map();
 
+// URL to session ID cache (for reusing existing analysis)
+// Maps normalized URL -> { sessionId, timestamp }
+const urlSessionCache = new Map();
+const URL_CACHE_TTL = 6 * 60 * 60 * 1000; // 6 hours
+
+// Extraction cache TTL (stream URLs expire after ~2-4 hours on ok.ru)
+const EXTRACTION_CACHE_TTL = 2 * 60 * 60 * 1000; // 2 hours
+
+/**
+ * Get cached yt-dlp extraction info from GCS
+ * Returns the info.json content if cached and not expired
+ */
+async function getCachedExtraction(url) {
+  const videoId = extractVideoId(url);
+  if (!videoId || IS_LOCAL) return null;
+
+  try {
+    const file = bucket.file(`cache/extraction_${videoId}.json`);
+    const [exists] = await file.exists();
+    if (!exists) return null;
+
+    const [metadata] = await file.getMetadata();
+    const created = new Date(metadata.timeCreated);
+    if (Date.now() - created.getTime() > EXTRACTION_CACHE_TTL) {
+      // Expired, delete it
+      await file.delete().catch(() => {});
+      return null;
+    }
+
+    const [contents] = await file.download();
+    console.log(`[Cache] Using cached extraction for ${videoId}`);
+    return JSON.parse(contents.toString());
+  } catch (err) {
+    console.log(`[Cache] Extraction cache miss for ${videoId}:`, err.message);
+    return null;
+  }
+}
+
+/**
+ * Save yt-dlp extraction info to GCS cache (minimal version)
+ */
+async function cacheExtraction(url, infoJson) {
+  const videoId = extractVideoId(url);
+  if (!videoId || IS_LOCAL || !infoJson) return;
+
+  try {
+    // Only cache essential fields that yt-dlp needs for --load-info-json
+    const minimalInfo = {
+      id: infoJson.id,
+      title: infoJson.title,
+      duration: infoJson.duration,
+      extractor: infoJson.extractor,
+      extractor_key: infoJson.extractor_key,
+      webpage_url: infoJson.webpage_url,
+      original_url: infoJson.original_url,
+      formats: infoJson.formats,  // Required for stream selection
+      requested_formats: infoJson.requested_formats,
+      // Skip: thumbnails, description, comments, subtitles, etc.
+    };
+
+    const file = bucket.file(`cache/extraction_${videoId}.json`);
+    await file.save(JSON.stringify(minimalInfo), {
+      contentType: 'application/json',
+      metadata: { cacheControl: 'no-cache' },
+    });
+
+    const originalSize = JSON.stringify(infoJson).length;
+    const minimalSize = JSON.stringify(minimalInfo).length;
+    console.log(`[Cache] Saved extraction cache for ${videoId} (${Math.round(minimalSize/1024)}KB, was ${Math.round(originalSize/1024)}KB)`);
+  } catch (err) {
+    console.error(`[Cache] Failed to cache extraction:`, err.message);
+  }
+}
+
+/**
+ * Extract video ID from URL
+ */
+function extractVideoId(url) {
+  try {
+    const u = new URL(url);
+    if (u.hostname.includes('ok.ru')) {
+      const match = u.pathname.match(/\/video\/(\d+)/);
+      if (match) return match[1];
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Normalize URL for cache lookup (strip tracking params, etc.)
+ */
+function normalizeUrl(url) {
+  try {
+    const u = new URL(url);
+    // For ok.ru, the video ID is in the path
+    if (u.hostname.includes('ok.ru')) {
+      // Extract just the video path: /video/123456789
+      const match = u.pathname.match(/\/video\/(\d+)/);
+      if (match) {
+        return `ok.ru/video/${match[1]}`;
+      }
+    }
+    return u.hostname + u.pathname;
+  } catch {
+    return url;
+  }
+}
+
+/**
+ * Check if we have a cached session for this URL
+ */
+async function getCachedSession(url) {
+  const normalizedUrl = normalizeUrl(url);
+  const cached = urlSessionCache.get(normalizedUrl);
+
+  if (!cached) return null;
+
+  // Check if cache entry is expired
+  if (Date.now() - cached.timestamp > URL_CACHE_TTL) {
+    urlSessionCache.delete(normalizedUrl);
+    return null;
+  }
+
+  // Verify session still exists
+  const session = await getAnalysisSession(cached.sessionId);
+  if (!session || session.status !== 'ready') {
+    urlSessionCache.delete(normalizedUrl);
+    return null;
+  }
+
+  console.log(`[Cache] Found cached session ${cached.sessionId} for ${normalizedUrl}`);
+  return { sessionId: cached.sessionId, session };
+}
+
+/**
+ * Cache a session for a URL
+ */
+function cacheSessionUrl(url, sessionId) {
+  const normalizedUrl = normalizeUrl(url);
+  urlSessionCache.set(normalizedUrl, {
+    sessionId,
+    timestamp: Date.now(),
+  });
+  console.log(`[Cache] Cached session ${sessionId} for ${normalizedUrl}`);
+}
+
 /**
  * Session storage - uses GCS in production, in-memory locally
  */
@@ -70,6 +218,151 @@ async function getSession(sessionId) {
     if (err.code === 404) return null;
     console.error(`[GCS] Error getting session ${sessionId}:`, err.message);
     return null;
+  }
+}
+
+/**
+ * Delete a file from GCS
+ */
+async function deleteGcsFile(filePath) {
+  if (IS_LOCAL) return;
+  try {
+    await bucket.file(filePath).delete();
+    console.log(`[GCS] Deleted: ${filePath}`);
+  } catch (err) {
+    if (err.code !== 404) {
+      console.error(`[GCS] Error deleting ${filePath}:`, err.message);
+    }
+  }
+}
+
+/**
+ * Delete a session and all its associated videos from GCS
+ */
+async function deleteSessionAndVideos(sessionId) {
+  const session = await getAnalysisSession(sessionId);
+
+  if (!IS_LOCAL && bucket && session) {
+    // Delete all chunk videos
+    if (session.chunks) {
+      for (const chunk of session.chunks) {
+        if (chunk.status === 'ready') {
+          await deleteGcsFile(`videos/${sessionId}_${chunk.id}.mp4`);
+        }
+      }
+    }
+    // Delete session JSON
+    await deleteGcsFile(`sessions/${sessionId}.json`);
+  }
+
+  // Clean up memory cache
+  analysisSessions.delete(sessionId);
+
+  if (IS_LOCAL) {
+    // Clean up local files
+    if (session?.chunks) {
+      for (const chunk of session.chunks) {
+        const videoKey = `video_${sessionId}_${chunk.id}`;
+        const videoPath = localSessions.get(videoKey);
+        if (videoPath && fs.existsSync(videoPath)) {
+          fs.unlinkSync(videoPath);
+        }
+        localSessions.delete(videoKey);
+      }
+    }
+    localSessions.delete(sessionId);
+  }
+
+  console.log(`[Session] Deleted session ${sessionId} and all associated videos`);
+}
+
+/**
+ * Get session from memory cache first, then GCS
+ * Also populates memory cache from GCS for faster subsequent access
+ */
+async function getAnalysisSession(sessionId) {
+  // Check memory cache first
+  if (analysisSessions.has(sessionId)) {
+    return analysisSessions.get(sessionId);
+  }
+
+  // Try loading from GCS
+  const session = await getSession(sessionId);
+  if (session) {
+    // Restore Map objects that were serialized as arrays
+    if (session.chunkTranscripts && Array.isArray(session.chunkTranscripts)) {
+      session.chunkTranscripts = new Map(session.chunkTranscripts);
+    } else if (!session.chunkTranscripts) {
+      session.chunkTranscripts = new Map();
+    }
+    // Cache in memory for faster access
+    analysisSessions.set(sessionId, session);
+    console.log(`[Session] Restored session ${sessionId} from GCS`);
+  }
+  return session;
+}
+
+/**
+ * Save session to both memory and GCS
+ */
+async function setAnalysisSession(sessionId, session) {
+  // Save to memory
+  analysisSessions.set(sessionId, session);
+
+  // Save to GCS (serialize Map to array for JSON)
+  const sessionToSave = {
+    ...session,
+    chunkTranscripts: session.chunkTranscripts instanceof Map
+      ? Array.from(session.chunkTranscripts.entries())
+      : session.chunkTranscripts,
+  };
+  await saveSession(sessionId, sessionToSave);
+}
+
+/**
+ * Clean up old sessions and videos from GCS (older than 7 days)
+ * GCS lifecycle policy handles most cleanup, but this runs on startup as a backup
+ */
+async function cleanupOldSessions() {
+  if (IS_LOCAL || !bucket) {
+    console.log('[Cleanup] Skipping cleanup in local mode');
+    return;
+  }
+
+  const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+  const cutoffDate = new Date(Date.now() - SEVEN_DAYS_MS);
+
+  try {
+    console.log(`[Cleanup] Looking for sessions older than ${cutoffDate.toISOString()}`);
+
+    // List all session files
+    const [sessionFiles] = await bucket.getFiles({ prefix: 'sessions/' });
+    let deletedCount = 0;
+
+    for (const file of sessionFiles) {
+      const [metadata] = await file.getMetadata();
+      const created = new Date(metadata.timeCreated);
+
+      if (created < cutoffDate) {
+        // Extract sessionId from filename (sessions/1234567890.json -> 1234567890)
+        const sessionId = file.name.replace('sessions/', '').replace('.json', '');
+
+        // Delete associated videos
+        const [videoFiles] = await bucket.getFiles({ prefix: `videos/${sessionId}_` });
+        for (const videoFile of videoFiles) {
+          await videoFile.delete().catch(() => {});
+        }
+
+        // Delete session file
+        await file.delete().catch(() => {});
+        deletedCount++;
+        console.log(`[Cleanup] Deleted old session: ${sessionId}`);
+      }
+    }
+
+    console.log(`[Cleanup] Complete. Deleted ${deletedCount} old sessions.`);
+  } catch (err) {
+    console.error('[Cleanup] Error during cleanup:', err.message);
   }
 }
 
@@ -347,6 +640,22 @@ app.get('/api/health', (req, res) => {
 });
 
 /**
+ * DELETE /api/session/:sessionId
+ * Delete a session and all its associated videos from storage
+ */
+app.delete('/api/session/:sessionId', async (req, res) => {
+  const { sessionId } = req.params;
+
+  try {
+    await deleteSessionAndVideos(sessionId);
+    res.json({ success: true, message: `Session ${sessionId} deleted` });
+  } catch (error) {
+    console.error(`[Delete Session] Error:`, error);
+    res.status(500).json({ error: error.message || 'Failed to delete session' });
+  }
+});
+
+/**
  * GET /api/local-video/:filename
  * Serve locally stored videos (development only)
  */
@@ -602,6 +911,20 @@ app.post('/api/analyze', async (req, res) => {
     return res.status(400).json({ error: 'OpenAI API key not configured on server' });
   }
 
+  // Check if we have a cached session for this URL
+  const cached = await getCachedSession(url);
+  if (cached) {
+    console.log(`[Analyze] Returning cached session ${cached.sessionId} for URL`);
+    return res.json({
+      sessionId: cached.sessionId,
+      status: 'cached',
+      title: cached.session.title,
+      totalDuration: cached.session.totalDuration,
+      chunks: cached.session.chunks,
+      hasMoreChunks: cached.session.hasMoreChunks,
+    });
+  }
+
   const sessionId = Date.now().toString();
   const tempDir = path.join(__dirname, 'temp');
   if (!fs.existsSync(tempDir)) {
@@ -621,101 +944,142 @@ app.post('/api/analyze', async (req, res) => {
   // Process in background - small delay to allow SSE connection
   setTimeout(async () => {
     try {
-      console.log(`[Analyze] Session ${sessionId}: Starting audio download`);
+      console.log(`[Analyze] Session ${sessionId}: Starting analysis`);
 
-      // Send immediate progress
-      sendProgress(sessionId, 'audio', 1, 'active', 'Connecting to ok.ru...');
+      // Fast info fetch via HTML scraping (~4-5s vs yt-dlp's ~15s)
+      sendProgress(sessionId, 'audio', 1, 'active', 'Fetching video info...');
 
-    // Animate progress during the slow dumpJson phase
-    let connectProgress = 1;
-    const connectInterval = setInterval(() => {
-      connectProgress = Math.min(connectProgress + 1, 10);
-      sendProgress(sessionId, 'audio', connectProgress, 'active', 'Fetching video info...');
-    }, 2000);
+      let title, totalDuration;
+      try {
+        const info = await getOkRuVideoInfo(url);
+        title = info.title;
+        totalDuration = info.duration;
+        console.log(`[Analyze] Session ${sessionId}: Got info - "${title}" (${Math.round(totalDuration / 60)}min)`);
+      } catch (e) {
+        console.log(`[Analyze] Session ${sessionId}: Fast info fetch failed, will get from download`);
+        title = 'Untitled Video';
+        totalDuration = 0;
+      }
 
-    // Get video info first
-    const info = await ytdlp(url, {
-      dumpJson: true,
-      noWarnings: true,
-    });
+      const totalDurationMin = Math.round(totalDuration / 60);
 
-    clearInterval(connectInterval);
-    const title = info.title || 'Untitled Video';
-    const totalDuration = info.duration || 0;
-    const totalDurationMin = Math.round(totalDuration / 60);
+      // Check for cached extraction info (speeds up by ~2 min)
+      let cachedInfoPath = null;
+      const cachedExtraction = await getCachedExtraction(url);
+      if (cachedExtraction) {
+        // Write cached info to temp file for yt-dlp to use
+        cachedInfoPath = path.join(tempDir, `cached_info_${sessionId}.json`);
+        fs.writeFileSync(cachedInfoPath, JSON.stringify(cachedExtraction));
+        console.log(`[Analyze] Session ${sessionId}: Using cached extraction`);
+      }
 
-    // Download up to 30 min of audio (buffer for smart chunking)
-    const downloadEndTime = Math.min(DOWNLOAD_BUFFER, totalDuration);
-    const downloadDurationMin = Math.round(downloadEndTime / 60);
+      // Now download audio (yt-dlp will get duration if we didn't)
+      sendProgress(sessionId, 'audio', 5, 'active', 'Downloading audio...');
+      const audioPath = path.join(tempDir, `audio_${sessionId}_batch0.mp3`);
+      const infoJsonPath = path.join(tempDir, `audio_${sessionId}_batch0.mp3.info.json`);
+      const onProgress = createProgressCallback(sessionId);
+      const { size: audioSize, info: downloadInfo } = await downloadAudioChunk(
+        url, audioPath, 0, DOWNLOAD_BUFFER,
+        {
+          onProgress,
+          fetchInfo: !cachedExtraction && totalDuration === 0,  // Only fetch if no cache and scrape failed
+          cachedInfoPath,
+        }
+      );
 
-    console.log(`[Analyze] Session ${sessionId}: Total ${totalDurationMin}min, downloading first ${downloadDurationMin}min`);
+      // Cache the extraction info for future requests (if we did a fresh extraction)
+      if (!cachedExtraction && fs.existsSync(infoJsonPath)) {
+        try {
+          const freshInfo = JSON.parse(fs.readFileSync(infoJsonPath, 'utf8'));
+          await cacheExtraction(url, freshInfo);
+        } catch (e) {
+          console.log(`[Analyze] Failed to cache extraction:`, e.message);
+        }
+      }
 
-    // Download first batch of audio
-    const audioPath = path.join(tempDir, `audio_${sessionId}_batch0.mp3`);
-    const onProgress = createProgressCallback(sessionId);
-    const { size: audioSize } = await downloadAudioChunk(url, audioPath, 0, downloadEndTime, { onProgress });
-    console.log(`[Analyze] Session ${sessionId}: First batch downloaded (${(audioSize / 1024 / 1024).toFixed(1)} MB)`);
+      // Clean up temp cached info file
+      if (cachedInfoPath && fs.existsSync(cachedInfoPath)) {
+        fs.unlinkSync(cachedInfoPath);
+      }
 
-    // Transcribe audio
-    const fullBatchTranscript = await transcribeAudioChunk(audioPath, { onProgress });
+      // Use download info as fallback
+      if (totalDuration === 0 && downloadInfo) {
+        title = downloadInfo.title || title;
+        totalDuration = downloadInfo.duration || 0;
+      }
 
-    // Clean up audio file
-    fs.unlinkSync(audioPath);
+      // Actual download may be shorter than requested if video is short
+      const downloadEndTime = Math.min(DOWNLOAD_BUFFER, totalDuration);
+      const downloadDurationMin = Math.round(downloadEndTime / 60);
 
-    // Smart chunk the entire downloaded portion
-    const allChunks = createChunks(fullBatchTranscript);
-    console.log(`[Analyze] Session ${sessionId}: Smart chunking created ${allChunks.length} chunks from ${downloadDurationMin}min`);
+      console.log(`[Analyze] Session ${sessionId}: Total ${Math.round(totalDuration / 60)}min, downloaded ${downloadDurationMin}min (${(audioSize / 1024 / 1024).toFixed(1)} MB)`);
 
-    // Take first N chunks for this batch
-    const chunksToShow = allChunks.slice(0, CHUNKS_PER_BATCH);
-    const lastShownChunk = chunksToShow[chunksToShow.length - 1];
-    const batchEndTime = lastShownChunk ? lastShownChunk.endTime : downloadEndTime;
+      // Transcribe audio
+      const rawTranscript = await transcribeAudioChunk(audioPath, { onProgress });
 
-    // Determine if there's more content after these chunks
-    const hasMoreChunks = batchEndTime < totalDuration;
+      // Add punctuation via LLM
+      const fullBatchTranscript = await addPunctuation(rawTranscript, { onProgress });
 
-    // Build transcript containing only the words/segments for shown chunks
-    const transcript = {
-      words: fullBatchTranscript.words.filter(w => w.end <= batchEndTime),
-      segments: fullBatchTranscript.segments.filter(s => s.end <= batchEndTime),
-      language: fullBatchTranscript.language,
-      duration: batchEndTime,
-    };
+      // Clean up audio file
+      fs.unlinkSync(audioPath);
 
-    // Add status to chunks
-    const chunks = chunksToShow.map(chunk => ({
-      ...chunk,
-      status: 'pending',
-      videoUrl: null,
-    }));
+      // Smart chunk the entire downloaded portion
+      const allChunks = createChunks(fullBatchTranscript);
+      console.log(`[Analyze] Session ${sessionId}: Smart chunking created ${allChunks.length} chunks from ${downloadDurationMin}min`);
 
-    console.log(`[Analyze] Session ${sessionId}: Showing ${chunks.length} chunks (ends at ${formatTime(batchEndTime)}), hasMore: ${hasMoreChunks}`);
+      // Take first N chunks for this batch
+      const chunksToShow = allChunks.slice(0, CHUNKS_PER_BATCH);
+      const lastShownChunk = chunksToShow[chunksToShow.length - 1];
+      const batchEndTime = lastShownChunk ? lastShownChunk.endTime : downloadEndTime;
 
-    // Store session data
-    analysisSessions.set(sessionId, {
-      status: 'ready',
-      url,
-      title,
-      transcript,
-      chunks,
-      totalDuration,
-      nextBatchStartTime: hasMoreChunks ? batchEndTime : null,  // Start next batch from end of last shown chunk
-      hasMoreChunks,
-      chunkTranscripts: new Map(),
-    });
+      // Determine if there's more content after these chunks
+      const hasMoreChunks = batchEndTime < totalDuration;
 
-    // Send completion event
-    sendProgress(sessionId, 'complete', 100, 'complete', 'Analysis complete', {
-      title,
-      totalDuration,
-      chunks,
-      hasMoreChunks,
-    });
+      // Build transcript containing only the words/segments for shown chunks
+      const transcript = {
+        words: fullBatchTranscript.words.filter(w => w.end <= batchEndTime),
+        segments: fullBatchTranscript.segments.filter(s => s.end <= batchEndTime),
+        language: fullBatchTranscript.language,
+        duration: batchEndTime,
+      };
+
+      // Add status to chunks
+      const chunks = chunksToShow.map(chunk => ({
+        ...chunk,
+        status: 'pending',
+        videoUrl: null,
+      }));
+
+      console.log(`[Analyze] Session ${sessionId}: Showing ${chunks.length} chunks (ends at ${formatTime(batchEndTime)}), hasMore: ${hasMoreChunks}`);
+
+      // Store session data (persisted to GCS)
+      await setAnalysisSession(sessionId, {
+        status: 'ready',
+        url,
+        title,
+        transcript,
+        chunks,
+        totalDuration,
+        nextBatchStartTime: hasMoreChunks ? batchEndTime : null,  // Start next batch from end of last shown chunk
+        hasMoreChunks,
+        chunkTranscripts: new Map(),
+      });
+
+      // Cache the URL -> session mapping for fast re-access
+      cacheSessionUrl(url, sessionId);
+
+      // Send completion event
+      sendProgress(sessionId, 'complete', 100, 'complete', 'Analysis complete', {
+        title,
+        totalDuration,
+        chunks,
+        hasMoreChunks,
+      });
 
     } catch (error) {
       console.error(`[Analyze] Session ${sessionId} error:`, error);
 
-      analysisSessions.set(sessionId, {
+      await setAnalysisSession(sessionId, {
         status: 'error',
         error: error.message,
       });
@@ -736,10 +1100,10 @@ app.post('/api/load-more-chunks', async (req, res) => {
 
   console.log(`[LoadMore] Request for session ${sessionId}`);
 
-  const session = analysisSessions.get(sessionId);
+  const session = await getAnalysisSession(sessionId);
   if (!session) {
     console.log(`[LoadMore] Session ${sessionId} not found`);
-    return res.status(404).json({ error: 'Session not found' });
+    return res.status(404).json({ error: 'Session not found. Please re-analyze the video.' });
   }
   if (session.status !== 'ready') {
     console.log(`[LoadMore] Session ${sessionId} not ready, status: ${session.status}`);
@@ -764,12 +1128,29 @@ app.post('/api/load-more-chunks', async (req, res) => {
 
     console.log(`[LoadMore] Session ${sessionId}: Downloading ${formatTime(startTime)} - ${formatTime(downloadEndTime)}`);
 
+    // Check for cached extraction info
+    let cachedInfoPath = null;
+    const cachedExtraction = await getCachedExtraction(session.url);
+    if (cachedExtraction) {
+      cachedInfoPath = path.join(tempDir, `cached_info_${sessionId}_batch${batchIndex}.json`);
+      fs.writeFileSync(cachedInfoPath, JSON.stringify(cachedExtraction));
+      console.log(`[LoadMore] Session ${sessionId}: Using cached extraction`);
+    }
+
     // Download this batch of audio
     const onProgress = createProgressCallback(sessionId);
-    await downloadAudioChunk(session.url, audioPath, startTime, downloadEndTime, { onProgress });
+    await downloadAudioChunk(session.url, audioPath, startTime, downloadEndTime, { onProgress, cachedInfoPath });
+
+    // Clean up temp cached info file
+    if (cachedInfoPath && fs.existsSync(cachedInfoPath)) {
+      fs.unlinkSync(cachedInfoPath);
+    }
 
     // Transcribe audio
-    const rawTranscript = await transcribeAudioChunk(audioPath, { onProgress });
+    const rawTranscriptUnpunctuated = await transcribeAudioChunk(audioPath, { onProgress });
+
+    // Add punctuation via LLM
+    const rawTranscript = await addPunctuation(rawTranscriptUnpunctuated, { onProgress });
 
     // Clean up audio
     fs.unlinkSync(audioPath);
@@ -814,6 +1195,9 @@ app.post('/api/load-more-chunks', async (req, res) => {
     session.chunks.push(...newChunks);
     session.nextBatchStartTime = hasMoreAfterThis ? batchEndTime : null;
     session.hasMoreChunks = hasMoreAfterThis;
+
+    // Save session to GCS for persistence across restarts
+    await setAnalysisSession(sessionId, session);
 
     console.log(`[LoadMore] Session ${sessionId}: Added ${newChunks.length} chunks (ends at ${formatTime(batchEndTime)}), hasMore: ${hasMoreAfterThis}`);
 
@@ -900,18 +1284,86 @@ app.get('/api/progress/:sessionId', (req, res) => {
 });
 
 /**
+ * Terminal progress bar rendering
+ */
+const TERM_COLORS = {
+  reset: '\x1b[0m',
+  bold: '\x1b[1m',
+  dim: '\x1b[2m',
+  blue: '\x1b[34m',
+  green: '\x1b[32m',
+  magenta: '\x1b[35m',
+  yellow: '\x1b[33m',
+  red: '\x1b[31m',
+  cyan: '\x1b[36m',
+  bgBlue: '\x1b[44m',
+  bgGreen: '\x1b[42m',
+  bgMagenta: '\x1b[45m',
+  bgYellow: '\x1b[43m',
+  bgRed: '\x1b[41m',
+  white: '\x1b[37m',
+};
+
+const TYPE_STYLES = {
+  audio:         { color: TERM_COLORS.blue,    label: 'AUDIO' },
+  transcription: { color: TERM_COLORS.green,   label: 'TRANSCRIBE' },
+  punctuation:   { color: TERM_COLORS.yellow,  label: 'PUNCTUATE' },
+  video:         { color: TERM_COLORS.magenta,  label: 'VIDEO' },
+  complete:      { color: TERM_COLORS.green,   label: 'DONE' },
+  error:         { color: TERM_COLORS.red,     label: 'ERROR' },
+  connected:     { color: TERM_COLORS.cyan,    label: 'SSE' },
+};
+
+function renderProgressBar(percent, width = 30) {
+  const filled = Math.round((percent / 100) * width);
+  const empty = width - filled;
+  return '█'.repeat(filled) + '░'.repeat(empty);
+}
+
+function printProgress(sessionId, type, progress, status, message) {
+  const style = TYPE_STYLES[type] || { color: TERM_COLORS.white, label: type.toUpperCase() };
+  const { color, label } = style;
+  const { reset, bold, dim } = TERM_COLORS;
+
+  if (type === 'connected') {
+    console.log(`${dim}[${sessionId.slice(-6)}]${reset} ${color}${label}${reset} Client connected`);
+    return;
+  }
+
+  if (type === 'error') {
+    console.log(`${dim}[${sessionId.slice(-6)}]${reset} ${color}${bold}${label}${reset} ${message}`);
+    return;
+  }
+
+  if (type === 'complete') {
+    console.log(`${dim}[${sessionId.slice(-6)}]${reset} ${color}${bold}✓ ${label}${reset} ${message}`);
+    return;
+  }
+
+  const bar = renderProgressBar(progress);
+  const pct = `${String(progress).padStart(3)}%`;
+  // Use \r to overwrite line for same-type updates
+  process.stdout.write(`\r${dim}[${sessionId.slice(-6)}]${reset} ${color}${bold}${label.padEnd(10)}${reset} ${color}${bar}${reset} ${pct} ${dim}${message}${reset}\x1b[K`);
+
+  // Print newline when a phase completes (100%) so next output starts fresh
+  if (progress >= 100 || status === 'complete') {
+    process.stdout.write('\n');
+  }
+}
+
+/**
  * Send progress update to all connected clients for a session
  */
 function sendProgress(sessionId, type, progress, status, message, extra = {}) {
+  // Print to terminal
+  printProgress(sessionId, type, progress, status, message);
+
   const clients = progressClients.get(sessionId);
   if (clients && clients.length > 0) {
     const data = JSON.stringify({ type, progress, status, message, ...extra });
-    console.log(`[SSE] Sending to ${clients.length} clients: ${type} ${progress}% - ${message}`);
     clients.forEach(client => {
       client.write(`data: ${data}\n\n`);
     });
-  } else {
-    console.log(`[SSE] No clients for session ${sessionId}, cannot send: ${type} - ${message}`);
   }
 }
 
@@ -919,10 +1371,10 @@ function sendProgress(sessionId, type, progress, status, message, extra = {}) {
  * GET /api/session/:sessionId
  * Get session data including chunk status
  */
-app.get('/api/session/:sessionId', (req, res) => {
-  const session = analysisSessions.get(req.params.sessionId);
+app.get('/api/session/:sessionId', async (req, res) => {
+  const session = await getAnalysisSession(req.params.sessionId);
   if (!session) {
-    return res.status(404).json({ error: 'Session not found' });
+    return res.status(404).json({ error: 'Session not found. Please re-analyze the video.' });
   }
 
   if (session.status === 'ready') {
@@ -963,12 +1415,12 @@ app.get('/api/session/:sessionId', (req, res) => {
  * Get chunk video URL and transcript (if ready)
  * Returns: { videoUrl, transcript, title }
  */
-app.get('/api/session/:sessionId/chunk/:chunkId', (req, res) => {
+app.get('/api/session/:sessionId/chunk/:chunkId', async (req, res) => {
   const { sessionId, chunkId } = req.params;
 
-  const session = analysisSessions.get(sessionId);
+  const session = await getAnalysisSession(sessionId);
   if (!session || session.status !== 'ready') {
-    return res.status(404).json({ error: 'Session not found or not ready' });
+    return res.status(404).json({ error: 'Session not found or not ready. Please re-analyze the video.' });
   }
 
   const chunk = session.chunks.find(c => c.id === chunkId);
@@ -1005,9 +1457,9 @@ app.get('/api/session/:sessionId/chunk/:chunkId', (req, res) => {
 app.post('/api/download-chunk', async (req, res) => {
   const { sessionId, chunkId } = req.body;
 
-  const session = analysisSessions.get(sessionId);
+  const session = await getAnalysisSession(sessionId);
   if (!session || session.status !== 'ready') {
-    return res.status(404).json({ error: 'Session not found or not ready' });
+    return res.status(404).json({ error: 'Session not found or not ready. Please re-analyze the video.' });
   }
 
   // Find the chunk in session
@@ -1040,10 +1492,24 @@ app.post('/api/download-chunk', async (req, res) => {
     const partNum = parseInt(chunkId.split('-')[1]) + 1;
     console.log(`[Download-Chunk] Session ${sessionId}, Chunk ${chunkId}: ${formatTime(startTime)} - ${formatTime(endTime)}`);
 
+    // Check for cached extraction info (speeds up by ~2 min for ok.ru)
+    let cachedInfoPath = null;
+    const cachedExtraction = await getCachedExtraction(session.url);
+    if (cachedExtraction) {
+      cachedInfoPath = path.join(tempDir, `cached_info_${sessionId}_${chunkId}.json`);
+      fs.writeFileSync(cachedInfoPath, JSON.stringify(cachedExtraction));
+      console.log(`[Download-Chunk] Session ${sessionId}: Using cached extraction`);
+    }
+
     // Download video chunk
     const onProgress = createProgressCallback(sessionId);
-    const { size: videoSize } = await downloadVideoChunk(session.url, chunkPath, startTime, endTime, { onProgress, partNum });
+    const { size: videoSize } = await downloadVideoChunk(session.url, chunkPath, startTime, endTime, { onProgress, partNum, cachedInfoPath });
     console.log(`[Download-Chunk] Session ${sessionId}: Chunk downloaded (${(videoSize / 1024 / 1024).toFixed(1)} MB)`);
+
+    // Clean up temp cached info file
+    if (cachedInfoPath && fs.existsSync(cachedInfoPath)) {
+      fs.unlinkSync(cachedInfoPath);
+    }
 
     // Get chunk transcript with adjusted timestamps
     const chunkTranscript = getChunkTranscript(session.transcript, startTime, endTime);
@@ -1083,6 +1549,9 @@ app.post('/api/download-chunk', async (req, res) => {
     chunk.videoUrl = videoUrl;
     session.chunkTranscripts.set(chunkId, chunkTranscript);
 
+    // Save session to GCS for persistence across restarts
+    await setAnalysisSession(sessionId, session);
+
     sendProgress(sessionId, 'video', 100, 'complete', 'Ready');
     console.log(`[Download-Chunk] Session ${sessionId}: Chunk ready at ${videoUrl}`);
 
@@ -1091,6 +1560,10 @@ app.post('/api/download-chunk', async (req, res) => {
       transcript: chunkTranscript,
       title: `${session.title} - Part ${parseInt(chunkId.split('-')[1]) + 1}`,
     });
+
+    // Prefetch next chunk in background (fire and forget)
+    const currentIndex = parseInt(chunkId.split('-')[1]);
+    prefetchNextChunk(sessionId, currentIndex).catch(() => {});
 
   } catch (error) {
     console.error(`[Download-Chunk] Error:`, error);
@@ -1106,6 +1579,85 @@ app.post('/api/download-chunk', async (req, res) => {
   }
 });
 
+/**
+ * Prefetch the next pending chunk in background
+ * Called after a chunk download completes to make next chunk load feel instant
+ */
+async function prefetchNextChunk(sessionId, currentChunkIndex) {
+  try {
+    const session = await getAnalysisSession(sessionId);
+    if (!session || session.status !== 'ready') return;
+
+    // Find next pending chunk
+    const nextChunk = session.chunks.find((c, i) =>
+      i > currentChunkIndex && c.status === 'pending'
+    );
+
+    if (!nextChunk) {
+      console.log(`[Prefetch] No more chunks to prefetch for session ${sessionId}`);
+      return;
+    }
+
+    console.log(`[Prefetch] Starting prefetch of ${nextChunk.id} for session ${sessionId}`);
+
+    const tempDir = path.join(__dirname, 'temp');
+    const chunkPath = path.join(tempDir, `chunk_${sessionId}_${nextChunk.id}.mp4`);
+    const { startTime, endTime } = nextChunk;
+
+    // Mark as downloading
+    nextChunk.status = 'downloading';
+
+    // Check for cached extraction info
+    let cachedInfoPath = null;
+    const cachedExtraction = await getCachedExtraction(session.url);
+    if (cachedExtraction) {
+      cachedInfoPath = path.join(tempDir, `cached_info_${sessionId}_prefetch_${nextChunk.id}.json`);
+      fs.writeFileSync(cachedInfoPath, JSON.stringify(cachedExtraction));
+      console.log(`[Prefetch] Using cached extraction`);
+    }
+
+    // Download silently (no progress updates to avoid confusing the user)
+    const { size: videoSize } = await downloadVideoChunk(
+      session.url, chunkPath, startTime, endTime,
+      { onProgress: () => {}, partNum: parseInt(nextChunk.id.split('-')[1]) + 1, cachedInfoPath }
+    );
+
+    // Clean up cached info file
+    if (cachedInfoPath && fs.existsSync(cachedInfoPath)) {
+      fs.unlinkSync(cachedInfoPath);
+    }
+
+    // Get transcript
+    const chunkTranscript = getChunkTranscript(session.transcript, startTime, endTime);
+
+    // Upload to GCS
+    let videoUrl;
+    if (!IS_LOCAL && bucket) {
+      const gcsFileName = `videos/${sessionId}_${nextChunk.id}.mp4`;
+      await bucket.upload(chunkPath, {
+        destination: gcsFileName,
+        metadata: { contentType: 'video/mp4', cacheControl: 'public, max-age=86400' },
+      });
+      await bucket.file(gcsFileName).makePublic();
+      videoUrl = `https://storage.googleapis.com/${bucket.name}/${gcsFileName}`;
+      if (fs.existsSync(chunkPath)) fs.unlinkSync(chunkPath);
+    } else {
+      videoUrl = `/api/local-video/${sessionId}_${nextChunk.id}.mp4`;
+      localSessions.set(`video_${sessionId}_${nextChunk.id}`, chunkPath);
+    }
+
+    // Update session
+    nextChunk.status = 'ready';
+    nextChunk.videoUrl = videoUrl;
+    session.chunkTranscripts.set(nextChunk.id, chunkTranscript);
+    await setAnalysisSession(sessionId, session);
+
+    console.log(`[Prefetch] Completed ${nextChunk.id} (${(videoSize / 1024 / 1024).toFixed(1)} MB)`);
+  } catch (err) {
+    console.error(`[Prefetch] Error:`, err.message);
+  }
+}
+
 // Serve static frontend files in production
 const distPath = path.join(__dirname, 'dist');
 if (fs.existsSync(distPath)) {
@@ -1115,9 +1667,20 @@ if (fs.existsSync(distPath)) {
   });
 }
 
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-  console.log(`OpenAI API key: ${process.env.OPENAI_API_KEY ? 'loaded from .env' : 'not set'}`);
-  console.log(`Google API key: ${process.env.GOOGLE_TRANSLATE_API_KEY ? 'loaded from .env' : 'not set'}`);
-});
+// Export for tests
+export { app, analysisSessions, localSessions, progressClients, translationCache };
+
+// Only start listening when run directly (not when imported by tests)
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+    console.log(`OpenAI API key: ${process.env.OPENAI_API_KEY ? 'loaded from .env' : 'not set'}`);
+    console.log(`Google API key: ${process.env.GOOGLE_TRANSLATE_API_KEY ? 'loaded from .env' : 'not set'}`);
+
+    // Run cleanup on startup (non-blocking)
+    cleanupOldSessions().catch(err => {
+      console.error('[Startup] Cleanup failed:', err.message);
+    });
+  });
+}
 

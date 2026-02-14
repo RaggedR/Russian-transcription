@@ -70,6 +70,7 @@ The backend stores:
 Express.js server running on port 3001:
 
 **Media Functions (`server/media.js`):**
+- **`createHeartbeat(onProgress, type, messageBuilder, intervalMs)`**: Reusable heartbeat for showing "Connecting... (Xs)" during long operations
 - **`downloadAudioChunk(url, outputPath, startTime, endTime, options)`**: Downloads audio segment using yt-dlp
 - **`downloadVideoChunk(url, outputPath, startTime, endTime, options)`**: Downloads video segment using yt-dlp
 - **`transcribeAudioChunk(audioPath, options)`**: Transcribes audio using OpenAI Whisper API
@@ -88,14 +89,18 @@ Express.js server running on port 3001:
 
 ### Testing
 
-**Test video:** https://ok.ru/video/400776431053 (Russian, clear speech, >30 min)
-
-Run media function tests:
 ```bash
-cd server && node test-media.js
+# Unit tests (vitest)
+cd server && npm test           # Run once
+cd server && npm run test:watch # Watch mode
+
+# Integration tests (requires network, API keys)
+cd server && npm run test:integration
 ```
 
-Test procedure:
+**Test video:** https://ok.ru/video/400776431053 (Russian, clear speech, >30 min)
+
+Integration test procedure:
 1. Download audio for third batch (40:00 - 60:00) - tests `downloadAudioChunk`
 2. Transcribe that audio - tests `transcribeAudioChunk`
 3. Download video for third part of third batch (~46:00 - 49:00) - tests `downloadVideoChunk`
