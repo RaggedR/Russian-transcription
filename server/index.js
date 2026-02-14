@@ -136,16 +136,10 @@ function extractVideoId(url) {
  * Normalize URL for cache lookup (strip tracking params, etc.)
  */
 function normalizeUrl(url) {
+  const videoId = extractVideoId(url);
+  if (videoId) return `ok.ru/video/${videoId}`;
   try {
     const u = new URL(url);
-    // For ok.ru, the video ID is in the path
-    if (u.hostname.includes('ok.ru')) {
-      // Extract just the video path: /video/123456789
-      const match = u.pathname.match(/\/video\/(\d+)/);
-      if (match) {
-        return `ok.ru/video/${match[1]}`;
-      }
-    }
     return u.hostname + u.pathname;
   } catch {
     return url;
@@ -1479,6 +1473,34 @@ app.post('/api/download-chunk', async (req, res) => {
     });
   }
 
+  // If already being downloaded (e.g. by prefetch), wait for it to finish
+  if (chunk.status === 'downloading') {
+    const partNum = parseInt(chunkId.split('-')[1]) + 1;
+    // Poll until the chunk becomes ready (prefetch will finish it)
+    const maxWait = 120000; // 2 minutes
+    const pollInterval = 500;
+    const startWait = Date.now();
+    while (Date.now() - startWait < maxWait) {
+      await new Promise(r => setTimeout(r, pollInterval));
+      if (chunk.status === 'ready' && chunk.videoUrl) {
+        const transcript = session.chunkTranscripts.get(chunkId);
+        return res.json({
+          videoUrl: chunk.videoUrl,
+          transcript,
+          title: `${session.title} - Part ${partNum}`,
+        });
+      }
+      if (chunk.status === 'pending') {
+        // Prefetch failed, fall through to download below
+        break;
+      }
+    }
+    // If still downloading after timeout, fall through to re-download
+    if (chunk.status === 'downloading') {
+      console.log(`[Download-Chunk] Prefetch timeout for ${chunkId}, re-downloading`);
+    }
+  }
+
   // Get startTime/endTime from the chunk (not from request body)
   const { startTime, endTime } = chunk;
 
@@ -1668,7 +1690,7 @@ if (fs.existsSync(distPath)) {
 }
 
 // Export for tests
-export { app, analysisSessions, localSessions, progressClients, translationCache };
+export { app, analysisSessions, localSessions, progressClients, translationCache, urlSessionCache };
 
 // Only start listening when run directly (not when imported by tests)
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {

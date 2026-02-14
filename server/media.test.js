@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { createHeartbeat } from './media.js';
+import { createHeartbeat, editDistance, isFuzzyMatch, stripPunctuation } from './media.js';
 
 describe('createHeartbeat', () => {
   beforeEach(() => {
@@ -191,5 +191,105 @@ describe('createHeartbeat edge cases', () => {
     expect(onProgress).toHaveBeenLastCalledWith('audio', 0, 'active', '1:05');
 
     heartbeat.stop();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// stripPunctuation
+// ---------------------------------------------------------------------------
+
+describe('stripPunctuation', () => {
+  it('removes leading and trailing punctuation', () => {
+    expect(stripPunctuation('«Привет»')).toBe('Привет');
+    expect(stripPunctuation('слово.')).toBe('слово');
+    expect(stripPunctuation(',слово,')).toBe('слово');
+    expect(stripPunctuation('...слово!')).toBe('слово');
+    expect(stripPunctuation('—слово—')).toBe('слово');
+  });
+
+  it('preserves internal punctuation-like characters', () => {
+    expect(stripPunctuation('кто-то')).toBe('кто-то');
+  });
+
+  it('returns empty string for only-punctuation input', () => {
+    expect(stripPunctuation('...')).toBe('');
+    expect(stripPunctuation('—')).toBe('');
+  });
+
+  it('returns the word unchanged if no edge punctuation', () => {
+    expect(stripPunctuation('программа')).toBe('программа');
+    expect(stripPunctuation('hello')).toBe('hello');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// editDistance
+// ---------------------------------------------------------------------------
+
+describe('editDistance', () => {
+  it('returns 0 for identical strings', () => {
+    expect(editDistance('abc', 'abc')).toBe(0);
+    expect(editDistance('программа', 'программа')).toBe(0);
+  });
+
+  it('returns length of other string for empty input', () => {
+    expect(editDistance('', 'abc')).toBe(3);
+    expect(editDistance('abc', '')).toBe(3);
+    expect(editDistance('', '')).toBe(0);
+  });
+
+  it('computes single-character edits correctly', () => {
+    expect(editDistance('cat', 'bat')).toBe(1);  // substitution
+    expect(editDistance('cat', 'cats')).toBe(1); // insertion
+    expect(editDistance('cats', 'cat')).toBe(1); // deletion
+  });
+
+  it('computes multi-character edits', () => {
+    expect(editDistance('kitten', 'sitting')).toBe(3);
+    expect(editDistance('sunday', 'saturday')).toBe(3);
+  });
+
+  it('handles Russian words (Whisper correction scenario)', () => {
+    // пограмма -> программа (1 insertion: insert р after п)
+    expect(editDistance('пограмма', 'программа')).toBe(1);
+    // скажым -> скажем (1 substitution: ы -> е)
+    expect(editDistance('скажым', 'скажем')).toBe(1);
+  });
+
+  it('is symmetric', () => {
+    expect(editDistance('abc', 'xyz')).toBe(editDistance('xyz', 'abc'));
+    expect(editDistance('программа', 'пограмма')).toBe(editDistance('пограмма', 'программа'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isFuzzyMatch
+// ---------------------------------------------------------------------------
+
+describe('isFuzzyMatch', () => {
+  it('returns false for short words (< 4 chars)', () => {
+    expect(isFuzzyMatch('да', 'до')).toBe(false);
+    expect(isFuzzyMatch('кот', 'код')).toBe(false);
+  });
+
+  it('matches spelling corrections within threshold', () => {
+    // пограмма -> программа: distance 2, maxLen 9, threshold max(2, 2) = 2 ✓
+    expect(isFuzzyMatch('пограмма', 'программа')).toBe(true);
+    // скажым -> скажем: distance 1, but both are < 4? No, 6 chars. threshold max(2, 1) = 2 ✓
+    expect(isFuzzyMatch('скажым', 'скажем')).toBe(true);
+  });
+
+  it('rejects words that differ too much', () => {
+    expect(isFuzzyMatch('программа', 'телевизор')).toBe(false);
+    expect(isFuzzyMatch('hello', 'world')).toBe(false);
+  });
+
+  it('matches identical words', () => {
+    expect(isFuzzyMatch('программа', 'программа')).toBe(true);
+    expect(isFuzzyMatch('hello', 'hello')).toBe(true);
+  });
+
+  it('is symmetric', () => {
+    expect(isFuzzyMatch('пограмма', 'программа')).toBe(isFuzzyMatch('программа', 'пограмма'));
   });
 });

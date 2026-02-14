@@ -7,6 +7,9 @@ import { formatTime } from './chunking.js';
 // Use system yt-dlp binary instead of bundled one
 const ytdlp = ytdlpBase.create('yt-dlp');
 
+// ok.ru extraction typically takes 90-120 seconds due to their anti-bot JS protection
+const ESTIMATED_EXTRACTION_TIME = 100; // seconds
+
 /**
  * Fast info fetch for ok.ru videos by scraping OG meta tags (~4-5s vs yt-dlp's ~15s)
  * @param {string} url - ok.ru video URL
@@ -90,8 +93,6 @@ export async function downloadAudioChunk(url, outputPath, startTime, endTime, op
   const targetDuration = formatTime(duration);
 
   // Heartbeat with phase-aware messages and estimated progress during extraction
-  // ok.ru extraction typically takes 90-120 seconds due to their anti-bot JS protection
-  const ESTIMATED_EXTRACTION_TIME = 100; // seconds
   let phase = 'connecting';
   const heartbeat = createHeartbeat(
     onProgress,
@@ -305,8 +306,6 @@ export async function downloadVideoChunk(url, outputPath, startTime, endTime, op
   const { onProgress = () => {}, partNum = 1, cachedInfoPath = null } = options;
   const sectionSpec = `*${formatTime(startTime)}-${formatTime(endTime)}`;
 
-  // ok.ru extraction typically takes 90-120 seconds
-  const ESTIMATED_EXTRACTION_TIME = 100;
   let phase = cachedInfoPath && fs.existsSync(cachedInfoPath) ? 'starting' : 'extracting';
 
   // Heartbeat with estimated progress during extraction
@@ -465,40 +464,44 @@ export async function transcribeAudioChunk(audioPath, options = {}) {
  * Strip punctuation from the edges of a word (for matching purposes)
  * Handles Russian and common punctuation: . , ! ? ; : — – - « » " ' ( ) …
  */
-function stripPunctuation(word) {
+export function stripPunctuation(word) {
   return word.replace(/^[.,!?;:—–\-«»""''()…\s]+|[.,!?;:—–\-«»""''()…\s]+$/g, '');
 }
 
 /**
- * Levenshtein edit distance between two strings.
- * Used for fuzzy matching when the LLM corrects a transcription error.
+ * Levenshtein edit distance between two strings (O(min(n,m)) space).
+ * Uses a rolling 2-row approach instead of a full matrix.
  */
-function editDistance(a, b) {
+export function editDistance(a, b) {
   if (a.length === 0) return b.length;
   if (b.length === 0) return a.length;
 
-  const matrix = [];
-  for (let i = 0; i <= b.length; i++) matrix[i] = [i];
-  for (let j = 0; j <= a.length; j++) matrix[0][j] = j;
+  // Ensure a is the shorter string for O(min(n,m)) space
+  if (a.length > b.length) [a, b] = [b, a];
+
+  let prev = Array.from({ length: a.length + 1 }, (_, i) => i);
+  let curr = new Array(a.length + 1);
 
   for (let i = 1; i <= b.length; i++) {
+    curr[0] = i;
     for (let j = 1; j <= a.length; j++) {
       const cost = a[j - 1] === b[i - 1] ? 0 : 1;
-      matrix[i][j] = Math.min(
-        matrix[i - 1][j] + 1,
-        matrix[i][j - 1] + 1,
-        matrix[i - 1][j - 1] + cost
+      curr[j] = Math.min(
+        prev[j] + 1,
+        curr[j - 1] + 1,
+        prev[j - 1] + cost
       );
     }
+    [prev, curr] = [curr, prev];
   }
-  return matrix[b.length][a.length];
+  return prev[a.length];
 }
 
 /**
  * Check if two words are a fuzzy match (likely a spelling correction).
  * Allows up to ~30% character difference for words of 4+ characters.
  */
-function isFuzzyMatch(a, b) {
+export function isFuzzyMatch(a, b) {
   if (a.length < 4 || b.length < 4) return false;
   const dist = editDistance(a, b);
   const maxLen = Math.max(a.length, b.length);
@@ -667,13 +670,14 @@ Rules:
   }
 
   // Rebuild segments from punctuated words
+  // Whisper words have leading spaces (e.g. " привет"), so join with '' and trim
   const punctuatedSegments = transcript.segments.map(segment => {
     const segmentWords = punctuatedWords.filter(
       w => w.start >= segment.start && w.end <= segment.end
     );
     return {
       ...segment,
-      text: segmentWords.map(w => w.word).join(' ') || segment.text,
+      text: segmentWords.map(w => w.word).join('').trim() || segment.text,
     };
   });
 

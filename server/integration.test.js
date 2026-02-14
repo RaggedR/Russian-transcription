@@ -45,6 +45,7 @@ import {
   localSessions,
   progressClients,
   translationCache,
+  urlSessionCache,
 } from './index.js';
 
 // ---------------------------------------------------------------------------
@@ -124,6 +125,14 @@ function createSSEClient(url) {
         }
       }
     });
+  });
+
+  // Fail fast on connection errors instead of hanging until timeout
+  req.on('error', (err) => {
+    for (const waiter of waiters) {
+      waiter.resolve({ type: '__error', message: err.message });
+    }
+    waiters.length = 0;
   });
 
   return {
@@ -237,6 +246,7 @@ beforeEach(() => {
   analysisSessions.clear();
   localSessions.clear();
   translationCache.clear();
+  urlSessionCache.clear();
   // Clean up SSE clients
   for (const [, clients] of progressClients) {
     clients.forEach(c => { try { c.end(); } catch {} });
