@@ -21,6 +21,27 @@ function speak(text: string, language: string) {
   window.speechSynthesis.speak(utterance);
 }
 
+// Detect if text contains Cyrillic characters (i.e. is Russian)
+function containsCyrillic(text: string): boolean {
+  for (const char of text) {
+    const code = char.charCodeAt(0);
+    if (code >= 0x0400 && code <= 0x04ff) return true;
+  }
+  return false;
+}
+
+// Extract the Russian and English sides of a card, regardless of which field holds which.
+// Returns { russian, english, russianSentence, englishSentence }.
+function getCardSides(card: SRSCard) {
+  const wordIsCyrillic = containsCyrillic(card.word);
+  return {
+    russian: wordIsCyrillic ? card.word : card.translation,
+    english: wordIsCyrillic ? card.translation : card.word,
+    russianSentence: wordIsCyrillic ? card.context : card.contextTranslation,
+    englishSentence: wordIsCyrillic ? card.contextTranslation : card.context,
+  };
+}
+
 function formatPreview(preview: IntervalPreview): string {
   if (preview.unit === 'min') return `${preview.value}m`;
   const days = preview.value;
@@ -58,6 +79,107 @@ const RATINGS: { rating: SRSRating; label: string; color: string }[] = [
   { rating: 4, label: 'Good', color: 'bg-green-500 hover:bg-green-600' },
   { rating: 5, label: 'Easy', color: 'bg-blue-500 hover:bg-blue-600' },
 ];
+
+function CardContent({ card, showAnswer, reviewedCount, queueLength, onShowAnswer, onRate, onRemove }: {
+  card: SRSCard;
+  showAnswer: boolean;
+  reviewedCount: number;
+  queueLength: number;
+  onShowAnswer: () => void;
+  onRate: (rating: SRSRating) => void;
+  onRemove: () => void;
+}) {
+  const sides = getCardSides(card);
+
+  return (
+    <div>
+      {/* Progress */}
+      <div className="text-xs text-gray-400 text-center mb-6">
+        {card.repetition === 0 && (
+          <span className="text-orange-500 font-medium mr-2">Learning</span>
+        )}
+        {reviewedCount} reviewed
+        {queueLength > 0 && ` · ${queueLength} remaining`}
+      </div>
+
+      {/* Front: Russian word + pronunciation + Russian sentence */}
+      <div className="text-center mb-4">
+        <p className="text-3xl font-medium text-gray-900 mb-3">{sides.russian}</p>
+        <button
+          onClick={() => speak(sides.russian, 'ru')}
+          className="text-gray-400 hover:text-blue-600 transition-colors"
+          title="Listen"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-6 h-6 mx-auto">
+            <path d="M13.5 4.06c0-1.336-1.616-2.005-2.56-1.06l-4.5 4.5H4.508c-1.141 0-2.318.664-2.66 1.905A9.76 9.76 0 001.5 12c0 .898.121 1.768.35 2.595.341 1.24 1.518 1.905 2.659 1.905h1.93l4.5 4.5c.945.945 2.561.276 2.561-1.06V4.06zM18.584 5.106a.75.75 0 011.06 0c3.808 3.807 3.808 9.98 0 13.788a.75.75 0 11-1.06-1.06 8.25 8.25 0 000-11.668.75.75 0 010-1.06z" />
+            <path d="M15.932 7.757a.75.75 0 011.061 0 6 6 0 010 8.486.75.75 0 01-1.06-1.061 4.5 4.5 0 000-6.364.75.75 0 010-1.06z" />
+          </svg>
+        </button>
+      </div>
+
+      {sides.russianSentence && (
+        <div className="text-center mb-6 px-4">
+          <ContextSentence context={sides.russianSentence} word={sides.russian} />
+        </div>
+      )}
+
+      {!showAnswer ? (
+        <div className="text-center">
+          <button
+            onClick={onShowAnswer}
+            className="px-8 py-3 bg-gray-800 text-white rounded-lg hover:bg-gray-700 transition-colors text-sm font-medium"
+          >
+            Show Answer
+          </button>
+          <p className="text-xs text-gray-400 mt-2">Space or Enter</p>
+        </div>
+      ) : (
+        <div>
+          {/* Back: English translation + English sentence */}
+          <div className="text-center mb-4 pb-4 border-t pt-4">
+            <p className="text-xl text-gray-700 mb-2">{sides.english}</p>
+          </div>
+
+          {sides.englishSentence && (
+            <div className="text-center mb-6 px-4">
+              <ContextSentence context={sides.englishSentence} word={sides.english} />
+            </div>
+          )}
+
+          {/* Rating buttons */}
+          <div className="grid grid-cols-4 gap-2">
+            {RATINGS.map(({ rating, label, color }) => {
+              const preview = previewInterval(card, rating);
+              return (
+                <button
+                  key={rating}
+                  onClick={() => onRate(rating)}
+                  className={`${color} text-white rounded-lg py-3 px-2 transition-colors text-sm font-medium`}
+                >
+                  <div>{label}</div>
+                  <div className="text-xs opacity-80 mt-0.5">{formatPreview(preview)}</div>
+                </button>
+              );
+            })}
+          </div>
+          <p className="text-xs text-gray-400 text-center mt-2">
+            Keys: 1-4 or Space/Enter for Good
+          </p>
+
+          {/* Remove from deck */}
+          <div className="text-center mt-4">
+            <button
+              onClick={onRemove}
+              className="text-xs text-red-400 hover:text-red-600 transition-colors"
+            >
+              Remove from deck
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 // Queue item: a card + the timestamp when it becomes available to show
 interface QueueItem {
@@ -291,94 +413,15 @@ export function ReviewPanel({ isOpen, onClose, dueCards, onReview, onRemove }: R
             )}
 
             {/* Card */}
-            {currentItem && (
-              <div>
-                {/* Progress */}
-                <div className="text-xs text-gray-400 text-center mb-6">
-                  {currentItem.card.repetition === 0 && (
-                    <span className="text-orange-500 font-medium mr-2">Learning</span>
-                  )}
-                  {reviewedCount} reviewed
-                  {queue.length > 0 && ` · ${queue.length} remaining`}
-                </div>
-
-                {/* Front: Russian word + pronunciation + Russian sentence */}
-                <div className="text-center mb-4">
-                  <p className="text-3xl font-medium text-gray-900 mb-3">{currentItem.card.translation}</p>
-                  <button
-                    onClick={() => speak(currentItem.card.translation, currentItem.card.sourceLanguage)}
-                    className="text-gray-400 hover:text-blue-600 transition-colors"
-                    title="Listen"
-                  >
-                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-6 h-6 mx-auto">
-                      <path d="M13.5 4.06c0-1.336-1.616-2.005-2.56-1.06l-4.5 4.5H4.508c-1.141 0-2.318.664-2.66 1.905A9.76 9.76 0 001.5 12c0 .898.121 1.768.35 2.595.341 1.24 1.518 1.905 2.659 1.905h1.93l4.5 4.5c.945.945 2.561.276 2.561-1.06V4.06zM18.584 5.106a.75.75 0 011.06 0c3.808 3.807 3.808 9.98 0 13.788a.75.75 0 11-1.06-1.06 8.25 8.25 0 000-11.668.75.75 0 010-1.06z" />
-                      <path d="M15.932 7.757a.75.75 0 011.061 0 6 6 0 010 8.486.75.75 0 01-1.06-1.061 4.5 4.5 0 000-6.364.75.75 0 010-1.06z" />
-                    </svg>
-                  </button>
-                </div>
-
-                {currentItem.card.contextTranslation && (
-                  <div className="text-center mb-6 px-4">
-                    <ContextSentence context={currentItem.card.contextTranslation} word={currentItem.card.translation} />
-                  </div>
-                )}
-
-                {!showAnswer ? (
-                  <div className="text-center">
-                    <button
-                      onClick={handleShowAnswer}
-                      className="px-8 py-3 bg-gray-800 text-white rounded-lg hover:bg-gray-700 transition-colors text-sm font-medium"
-                    >
-                      Show Answer
-                    </button>
-                    <p className="text-xs text-gray-400 mt-2">Space or Enter</p>
-                  </div>
-                ) : (
-                  <div>
-                    {/* Back: English translation + English sentence */}
-                    <div className="text-center mb-4 pb-4 border-t pt-4">
-                      <p className="text-xl text-gray-700 mb-2">{currentItem.card.word}</p>
-                    </div>
-
-                    {currentItem.card.context && (
-                      <div className="text-center mb-6 px-4">
-                        <ContextSentence context={currentItem.card.context} word={currentItem.card.word} />
-                      </div>
-                    )}
-
-                    {/* Rating buttons */}
-                    <div className="grid grid-cols-4 gap-2">
-                      {RATINGS.map(({ rating, label, color }) => {
-                        const preview = previewInterval(currentItem.card, rating);
-                        return (
-                          <button
-                            key={rating}
-                            onClick={() => handleRate(rating)}
-                            className={`${color} text-white rounded-lg py-3 px-2 transition-colors text-sm font-medium`}
-                          >
-                            <div>{label}</div>
-                            <div className="text-xs opacity-80 mt-0.5">{formatPreview(preview)}</div>
-                          </button>
-                        );
-                      })}
-                    </div>
-                    <p className="text-xs text-gray-400 text-center mt-2">
-                      Keys: 1-4 or Space/Enter for Good
-                    </p>
-
-                    {/* Remove from deck */}
-                    <div className="text-center mt-4">
-                      <button
-                        onClick={handleRemove}
-                        className="text-xs text-red-400 hover:text-red-600 transition-colors"
-                      >
-                        Remove from deck
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
+            {currentItem && <CardContent
+              card={currentItem.card}
+              showAnswer={showAnswer}
+              reviewedCount={reviewedCount}
+              queueLength={queue.length}
+              onShowAnswer={handleShowAnswer}
+              onRate={handleRate}
+              onRemove={handleRemove}
+            />}
           </div>
         </div>
       </div>

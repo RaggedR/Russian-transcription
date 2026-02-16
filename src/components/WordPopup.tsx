@@ -78,12 +78,13 @@ export function WordPopup({
 
   return (
     <>
-      {/* Popup — absolutely positioned within scrollable container */}
+      {/* Popup — positioned relative to the clicked word's wrapper span */}
       <div
         className="absolute z-50 bg-white rounded-lg shadow-lg border border-gray-200 p-4 min-w-48 max-w-xs"
         style={{
-          left: position.x,
-          top: position.y + 4,
+          left: 0,
+          top: '100%',
+          marginTop: 4,
         }}
       >
         {isLoading && (

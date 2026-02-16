@@ -68,7 +68,6 @@ export function TranscriptPanel({
   const currentWordRef = useRef<HTMLSpanElement>(null);
   const [selectedWord, setSelectedWord] = useState<WordTimestamp | null>(null);
   const [selectedContext, setSelectedContext] = useState<string | undefined>(undefined);
-  const [popupPosition, setPopupPosition] = useState<{ x: number; y: number } | null>(null);
   const [translation, setTranslation] = useState<Translation | null>(null);
   const [isTranslating, setIsTranslating] = useState(false);
   const [translationError, setTranslationError] = useState<string | null>(null);
@@ -107,7 +106,7 @@ export function TranscriptPanel({
   }, [currentWordIndex]);
 
   const handleWordClick = useCallback(
-    async (word: WordTimestamp, event: React.MouseEvent) => {
+    async (word: WordTimestamp) => {
       // Only handle Russian words
       if (!isRussianWord(word.word)) {
         return;
@@ -132,12 +131,6 @@ export function TranscriptPanel({
 
       // Show translation popup
       setSelectedWord(word);
-      // Position directly below the clicked word using its offset within the container
-      const el = event.target as HTMLElement;
-      setPopupPosition({
-        x: el.offsetLeft,
-        y: el.offsetTop + el.offsetHeight,
-      });
       setTranslation(null);
       setTranslationError(null);
       setIsTranslating(true);
@@ -164,7 +157,6 @@ export function TranscriptPanel({
   const handleClosePopup = useCallback(() => {
     setSelectedWord(null);
     setSelectedContext(undefined);
-    setPopupPosition(null);
     setTranslation(null);
     setTranslationError(null);
   }, []);
@@ -200,37 +192,40 @@ export function TranscriptPanel({
           const isPastWord = index < currentWordIndex;
           const isClickable = isRussianWord(word.word);
           const isFreqWord = isInFreqRange(word);
+          const isSelected = selectedWord === word;
 
           return (
-            <span
-              key={index}
-              ref={isCurrentWord ? currentWordRef : null}
-              onClick={(e) => handleWordClick(word, e)}
-              className={`
-                ${isClickable ? 'cursor-pointer hover:bg-blue-100' : ''}
-                ${isCurrentWord ? 'bg-yellow-300 font-medium' : ''}
-                ${isPastWord ? 'text-gray-500' : 'text-gray-900'}
-                ${selectedWord === word ? 'bg-blue-200' : ''}
-                ${isFreqWord ? 'underline decoration-2 decoration-blue-400' : ''}
-                transition-colors rounded px-0.5
-              `}
-            >
-              {word.word}{' '}
+            <span key={index} style={isSelected ? { position: 'relative' as const } : undefined}>
+              <span
+                ref={isCurrentWord ? currentWordRef : null}
+                onClick={() => handleWordClick(word)}
+                className={`
+                  ${isClickable ? 'cursor-pointer hover:bg-blue-100' : ''}
+                  ${isCurrentWord ? 'bg-yellow-300 font-medium' : ''}
+                  ${isPastWord ? 'text-gray-500' : 'text-gray-900'}
+                  ${isSelected ? 'bg-blue-200' : ''}
+                  ${isFreqWord ? 'underline decoration-2 decoration-blue-400' : ''}
+                  transition-colors rounded px-0.5
+                `}
+              >
+                {word.word}
+              </span>
+              {isSelected && (
+                <WordPopup
+                  translation={translation}
+                  isLoading={isTranslating}
+                  error={translationError}
+                  position={{ x: 0, y: 0 }}
+                  onClose={handleClosePopup}
+                  onAddToDeck={onAddToDeck}
+                  isInDeck={isWordInDeck?.(word.word)}
+                  context={selectedContext}
+                />
+              )}
+              {' '}
             </span>
           );
         })}
-
-      {/* Word popup — inside scrollable container so it scrolls with text */}
-      <WordPopup
-        translation={translation}
-        isLoading={isTranslating}
-        error={translationError}
-        position={popupPosition}
-        onClose={handleClosePopup}
-        onAddToDeck={onAddToDeck}
-        isInDeck={selectedWord ? isWordInDeck?.(selectedWord.word) : false}
-        context={selectedContext}
-      />
       </div>
 
       {/* Progress indicator */}
