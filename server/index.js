@@ -484,19 +484,19 @@ const translationCache = new Map();
 
 /**
  * POST /api/transcribe
- * Accepts: { url: string, openaiApiKey: string }
+ * Accepts: { url: string }
  * Returns: { videoUrl: string, transcript: { words: [], segments: [], language: string, duration: number } }
  */
 app.post('/api/transcribe', async (req, res) => {
-  const { url, openaiApiKey } = req.body;
-  const apiKey = openaiApiKey || process.env.OPENAI_API_KEY;
+  const { url } = req.body;
+  const apiKey = process.env.OPENAI_API_KEY;
 
   if (!url) {
     return res.status(400).json({ error: 'URL is required' });
   }
 
   if (!apiKey) {
-    return res.status(400).json({ error: 'OpenAI API key is required (set in .env or pass in request)' });
+    return res.status(500).json({ error: 'Transcription service not configured' });
   }
 
   const tempDir = path.join(__dirname, 'temp');
@@ -678,19 +678,19 @@ app.post('/api/transcribe', async (req, res) => {
 
 /**
  * POST /api/translate
- * Accepts: { word: string, googleApiKey: string }
+ * Accepts: { word: string }
  * Returns: { word: string, translation: string, sourceLanguage: string }
  */
 app.post('/api/translate', translateRateLimit, requireTranslateBudget, async (req, res) => {
-  const { word, googleApiKey } = req.body;
-  const apiKey = googleApiKey || process.env.GOOGLE_TRANSLATE_API_KEY;
+  const { word } = req.body;
+  const apiKey = process.env.GOOGLE_TRANSLATE_API_KEY;
 
   if (!word) {
     return res.status(400).json({ error: 'Word is required' });
   }
 
   if (!apiKey) {
-    return res.status(400).json({ error: 'Google API key is required (set in .env or pass in request)' });
+    return res.status(500).json({ error: 'Translation service not configured' });
   }
 
   const cacheKey = `ru:${word.toLowerCase()}`;
@@ -1103,7 +1103,7 @@ app.post('/api/analyze', analyzeRateLimit, analyzeDailyLimit, requireBudget, asy
   }
 
   if (!apiKey) {
-    return res.status(400).json({ error: 'OpenAI API key not configured on server' });
+    return res.status(500).json({ error: 'Transcription service not configured' });
   }
 
   // Check if we have a cached session for this URL
