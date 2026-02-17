@@ -6,6 +6,7 @@ import tseslint from 'typescript-eslint'
 import { defineConfig, globalIgnores } from 'eslint/config'
 
 export default defineConfig([
+  // TODO: Add separate relaxed eslint config for e2e/ and server/ instead of ignoring entirely
   globalIgnores(['dist', 'e2e', 'server']),
   {
     files: ['**/*.{ts,tsx}'],

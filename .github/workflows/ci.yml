@@ -70,6 +70,9 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
     permissions:
       contents: read
       id-token: write
@@ -108,6 +111,9 @@ jobs:
       - name: Get Cloud Run URL for frontend build
         id: get-url
         run: |
+          # On first deploy, service won't exist yet — URL will be empty.
+          # This is fine: empty VITE_API_URL means the frontend uses relative
+          # URLs (same origin), which is correct when served from Cloud Run.
           URL=$(gcloud run services describe russian-transcription \
             --region us-central1 \
             --format 'value(status.url)' 2>/dev/null || echo "")
@@ -123,10 +129,19 @@ jobs:
 
       - name: Build and push Docker image
         run: |
+          # Note: github-deploy SA has storage.admin which covers GCR image
+          # pull access for the base image (russian-base:latest)
           IMAGE="gcr.io/russian-transcription/russian-transcription"
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
           cd server
-          docker build --platform linux/amd64 -t $IMAGE:latest .
+          docker build --platform linux/amd64 \
+            -t $IMAGE:latest \
+            -t $IMAGE:${{ github.sha }} \
+            -t $IMAGE:$SHORT_SHA \
+            .
           docker push $IMAGE:latest
+          docker push $IMAGE:${{ github.sha }}
+          docker push $IMAGE:$SHORT_SHA
 
       - name: Deploy to Cloud Run
         run: |
