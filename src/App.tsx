@@ -9,6 +9,7 @@ import { ChunkMenu } from './components/ChunkMenu';
 import { ProgressBar } from './components/ProgressBar';
 import { DeckBadge } from './components/DeckBadge';
 import { ReviewPanel } from './components/ReviewPanel';
+import { LoginScreen } from './components/LoginScreen';
 import { useDeck } from './hooks/useDeck';
 import { useAuth } from './hooks/useAuth';
 import { apiRequest, subscribeToProgress, getSession, getChunk, downloadChunk, loadMoreChunks } from './services/api';
@@ -138,7 +139,7 @@ function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
   // Auth + Spaced repetition deck
-  const { userId } = useAuth();
+  const { userId, user, isLoading: authLoading, signInWithGoogle, signOut } = useAuth();
   const { cards, dueCards, dueCount, addCard, removeCard, reviewCard, isWordInDeck } = useDeck(userId);
   const [isReviewOpen, setIsReviewOpen] = useState(false);
 
@@ -147,6 +148,7 @@ function App() {
 
   // Error state
   const [error, setError] = useState<string | null>(null);
+  const [authError, setAuthError] = useState<string | null>(null);
 
   useEffect(() => {
     saveSettings(config);
@@ -638,6 +640,33 @@ function App() {
     setProgress([]);
   }, []);
 
+  // Auth loading state
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="inline-block animate-spin rounded-full h-10 w-10 border-4 border-blue-500 border-t-transparent"></div>
+      </div>
+    );
+  }
+
+  // Login gate — must sign in before using the app
+  if (!userId) {
+    return (
+      <LoginScreen
+        onSignIn={() => {
+          setAuthError(null);
+          signInWithGoogle().catch((err) => {
+            // Don't show error for user-cancelled popups
+            if (err?.code !== 'auth/popup-closed-by-user') {
+              setAuthError(err instanceof Error ? err.message : 'Sign-in failed');
+            }
+          });
+        }}
+        error={authError}
+      />
+    );
+  }
+
   return (
     <div className="min-h-screen bg-gray-50">
       {/* Header */}
@@ -672,6 +701,27 @@ function App() {
               />
             </svg>
           </button>
+          {/* User avatar + sign out */}
+          {user && (
+            <button
+              onClick={signOut}
+              className="flex items-center gap-1.5 p-1.5 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-md"
+              title={`Signed in as ${user.email}\nClick to sign out`}
+            >
+              {user.photoURL ? (
+                <img
+                  src={user.photoURL}
+                  alt=""
+                  className="w-6 h-6 rounded-full"
+                  referrerPolicy="no-referrer"
+                />
+              ) : (
+                <div className="w-6 h-6 rounded-full bg-blue-500 text-white text-xs flex items-center justify-center font-medium">
+                  {(user.displayName || user.email || '?')[0].toUpperCase()}
+                </div>
+              )}
+            </button>
+          )}
           </div>
         </div>
       </header>

@@ -1,4 +1,4 @@
-FROM gcr.io/book-friend-finder/russian-base:latest
+FROM gcr.io/russian-transcription/russian-base:latest
 
 WORKDIR /app
 

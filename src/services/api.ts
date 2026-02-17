@@ -1,4 +1,5 @@
 import type { ProgressState, VideoChunk, SessionResponse, ChunkResponse, LoadMoreResponse } from '../types';
+import { auth } from '../firebase';
 
 // API base URL - uses environment variable in production, relative path in development
 export const API_BASE_URL = import.meta.env.VITE_API_URL || '';
@@ -11,17 +12,35 @@ export const SSE_BASE_URL = import.meta.env.VITE_API_URL ||
     ? window.location.origin
     : 'http://localhost:3001');
 
+/**
+ * Get the current user's Firebase ID token for API authentication.
+ * Returns null if no user is signed in (e.g. during E2E tests).
+ */
+async function getIdToken(): Promise<string | null> {
+  const user = auth.currentUser;
+  if (!user) return null;
+  return user.getIdToken();
+}
+
 export async function apiRequest<T>(
   endpoint: string,
   options: RequestInit = {}
 ): Promise<T> {
   const url = `${API_BASE_URL}${endpoint}`;
+  const token = await getIdToken();
+
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...(options.headers as Record<string, string>),
+  };
+
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+
   const response = await fetch(url, {
     ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...options.headers,
-    },
+    headers,
   });
 
   if (!response.ok) {
@@ -81,72 +100,77 @@ export function subscribeToProgress(
   };
 
   // Try SSE first - connect directly to backend to avoid proxy buffering
-  try {
-    const url = `${SSE_BASE_URL}/api/progress/${sessionId}`;
-    eventSource = new EventSource(url);
+  // EventSource doesn't support custom headers, so pass token as query param
+  async function connectSSE() {
+    try {
+      const token = await getIdToken();
+      const tokenParam = token ? `?token=${encodeURIComponent(token)}` : '';
+      const url = `${SSE_BASE_URL}/api/progress/${sessionId}${tokenParam}`;
+      eventSource = new EventSource(url);
 
-    eventSource.onmessage = (event) => {
-      if (isClosed) return;
+      eventSource.onmessage = (event) => {
+        if (isClosed) return;
 
-      try {
-        const data: ProgressEvent = JSON.parse(event.data);
+        try {
+          const data: ProgressEvent = JSON.parse(event.data);
 
-        if (data.type === 'connected') {
-          onConnected?.();
-          return;
-        }
+          if (data.type === 'connected') {
+            onConnected?.();
+            return;
+          }
 
-        if (data.type === 'complete') {
-          // Only call onComplete if chunks are included (initial analysis)
-          if (data.chunks) {
-            onComplete({
-              title: data.title || 'Untitled',
-              totalDuration: data.totalDuration || 0,
-              chunks: data.chunks,
-              hasMoreChunks: data.hasMoreChunks || false,
-              contentType: data.contentType,
+          if (data.type === 'complete') {
+            // Only call onComplete if chunks are included (initial analysis)
+            if (data.chunks) {
+              onComplete({
+                title: data.title || 'Untitled',
+                totalDuration: data.totalDuration || 0,
+                chunks: data.chunks,
+                hasMoreChunks: data.hasMoreChunks || false,
+                contentType: data.contentType,
+              });
+            }
+            // Always cleanup on complete
+            cleanup();
+            return;
+          }
+
+          if (data.type === 'error') {
+            onError(data.message || 'Unknown error');
+            cleanup();
+            return;
+          }
+
+          // Progress update
+          if (data.type === 'audio' || data.type === 'transcription' || data.type === 'punctuation' || data.type === 'lemmatization' || data.type === 'video' || data.type === 'tts') {
+            onProgress({
+              type: data.type,
+              progress: data.progress,
+              status: data.status,
+              message: data.message,
             });
           }
-          // Always cleanup on complete
-          cleanup();
-          return;
+        } catch {
+          // Ignore parse errors
         }
+      };
 
-        if (data.type === 'error') {
-          onError(data.message || 'Unknown error');
-          cleanup();
-          return;
+      eventSource.onerror = (e) => {
+        if (isClosed) return;
+
+        // EventSource will auto-reconnect, only fall back to polling if readyState is CLOSED
+        if (eventSource?.readyState === EventSource.CLOSED) {
+          console.log('[API] SSE connection closed, falling back to polling');
+          eventSource = null;
+          startPolling();
+        } else {
+          console.log('[API] SSE error, will auto-reconnect', e);
         }
-
-        // Progress update
-        if (data.type === 'audio' || data.type === 'transcription' || data.type === 'punctuation' || data.type === 'lemmatization' || data.type === 'video' || data.type === 'tts') {
-          onProgress({
-            type: data.type,
-            progress: data.progress,
-            status: data.status,
-            message: data.message,
-          });
-        }
-      } catch {
-        // Ignore parse errors
-      }
-    };
-
-    eventSource.onerror = (e) => {
-      if (isClosed) return;
-
-      // EventSource will auto-reconnect, only fall back to polling if readyState is CLOSED
-      if (eventSource?.readyState === EventSource.CLOSED) {
-        console.log('[API] SSE connection closed, falling back to polling');
-        eventSource = null;
-        startPolling();
-      } else {
-        console.log('[API] SSE error, will auto-reconnect', e);
-      }
-    };
-  } catch {
-    // SSE not supported, use polling
-    startPolling();
+      };
+    } catch {
+      // SSE not supported, use polling
+      startPolling();
+    }
   }
 
   function startPolling() {
@@ -198,6 +222,8 @@ export function subscribeToProgress(
       }
     }, 2000);
   }
+
+  connectSSE();
 
   return cleanup;
 }

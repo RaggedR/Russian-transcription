@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Russian Video Transcription - a web app for watching Russian videos (primarily from ok.ru) with synced transcripts and click-to-translate functionality. Users paste video URLs, the backend downloads the video, transcribes it with OpenAI Whisper, adds punctuation/spelling corrections via GPT-4o, then splits long videos into chunks for easier viewing. Words are highlighted as the video plays.
+Russian Video & Text — a web app for watching Russian videos (ok.ru) and reading Russian texts (lib.ru) with synced transcripts, click-to-translate, and SRS flashcard review. Users paste URLs; the backend downloads, transcribes (Whisper), punctuates (GPT-4o), and chunks the content. Words highlight in sync with playback. Users build a flashcard deck by clicking words, which persists to Firestore via anonymous auth.
 
 ## Commands
 
@@ -41,10 +41,21 @@ cd server && npx vitest run -t "editDistance"
 cd server && npm run test:integration
 ```
 
+```bash
+# E2E tests (Playwright — frontend only, all APIs mocked)
+npm run test:e2e            # Run all E2E tests (headless)
+npm run test:e2e:headed     # Run with visible browser
+npm run test:e2e:ui         # Run with Playwright UI inspector
+
+# Install Playwright browsers (first time only)
+cd e2e && npx playwright install chromium
+```
+
 **Test files:**
 - `tests/typecheck.test.js` — Runs `tsc -b` to catch TypeScript errors (30s timeout)
 - `server/media.test.js` — Unit tests for heartbeat, stripPunctuation, editDistance, isFuzzyMatch
 - `server/integration.test.js` — Mocks `media.js`, tests all Express endpoints, SSE, session lifecycle
+- `e2e/tests/*.spec.ts` — Playwright E2E tests: app loading, video flow, word popup, flashcard review, add-to-deck, edge cases
 
 ## Setup
 
@@ -54,7 +65,14 @@ cd server && npm run test:integration
    ```
    OPENAI_API_KEY=sk-...
    GOOGLE_TRANSLATE_API_KEY=AIza...
+   VITE_FIREBASE_API_KEY=...
+   VITE_FIREBASE_AUTH_DOMAIN=...
+   VITE_FIREBASE_PROJECT_ID=...
+   VITE_FIREBASE_STORAGE_BUCKET=...
+   VITE_FIREBASE_MESSAGING_SENDER_ID=...
+   VITE_FIREBASE_APP_ID=...
    ```
+4. Deploy Firestore security rules: `firebase deploy --only firestore:rules`
 
 ## Architecture
 
@@ -62,7 +80,7 @@ cd server && npm run test:integration
 
 The frontend is a **thin client** — the backend owns all session state. The frontend only manages view state (`input` | `analyzing` | `chunk-menu` | `loading-chunk` | `player`), current playback state, and UI errors.
 
-### Core Flow
+### Core Flow (Video Mode)
 ```
 1. User pastes ok.ru URL
 2. POST /api/analyze → scrape metadata (fast) → download audio → transcribe → punctuate → chunk
@@ -74,16 +92,39 @@ The frontend is a **thin client** — the backend owns all session state. The fr
 8. Video plays with synced transcript highlighting, click-to-translate
 ```
 
+### Core Flow (Text Mode)
+```
+1. User pastes lib.ru URL (detected by url.includes('lib.ru'))
+2. POST /api/analyze → fetch text → split into ~3500-char chunks → generate TTS audio (OpenAI)
+3. AudioPlayer.tsx for playback, full-width transcript view (no side-by-side video)
+4. Word timestamps estimated from character offsets + audio duration
+```
+
+### SSE Architecture
+
+SSE for progress updates has a special setup to avoid Vite proxy buffering in dev:
+- `api.ts` connects SSE directly to `http://localhost:3001` (not through Vite proxy)
+- `vite.config.ts` disables caching on `/progress/` proxy requests as a fallback
+- In production, SSE connects to the same origin (frontend served from Cloud Run)
+
 ### Session Persistence
 
-- **Local dev**: In-memory Maps, videos in `server/temp/`, lost on restart
-- **Production (GCS)**: Sessions in `gs://russian-transcription-videos/sessions/`, videos in `videos/`, extraction cache in `cache/`
+- **Local dev** (`IS_LOCAL=true`): In-memory Maps, videos in `server/temp/`, lost on restart. Controlled by absence of `GCS_BUCKET` env var or `NODE_ENV=development`.
+- **Production**: Sessions in `gs://russian-transcription-videos/sessions/`, videos in `videos/`, extraction cache in `cache/`
 - `chunkTranscripts` is a Map — serialized as `Array.from(map.entries())` for JSON/GCS storage, restored with `new Map(array)`
 - URL session cache (6h TTL), extraction cache (2h TTL), translation cache (in-memory)
 
 ### Backend (`server/`)
 
-Express.js on port 3001. Single file `index.js` for routing/session management, `media.js` for external tool integration.
+Express.js on port 3001 (local) / `PORT` env var (Cloud Run). Three main files:
+- `index.js` — Routing, session management, SSE, chunk prefetching
+- `media.js` — External tool integration (yt-dlp, Whisper, GPT-4o, Google Translate, TTS)
+- `chunking.js` — Splits transcripts at natural pauses (>0.5s gaps), targets ~3min chunks
+
+**Key patterns in `media.js`:**
+- `addPunctuation()` uses a two-pointer algorithm to align GPT-4o's punctuated output back to original Whisper word timestamps
+- `createHeartbeat()` sends periodic SSE updates during long-running operations (extraction, download, transcription)
+- `estimateWordTimestamps()` generates synthetic timestamps for TTS text mode (no Whisper timestamps available)
 
 **API Endpoints:**
 
@@ -99,46 +140,49 @@ Express.js on port 3001. Single file `index.js` for routing/session management, 
 | POST | `/api/translate` | Google Translate proxy with caching |
 | GET | `/api/progress/:sessionId` | SSE stream for progress events |
 
-**`server/media.js` — External tool functions:**
-- `getOkRuVideoInfo(url)` — Fast HTML scraping of ok.ru OG tags (~4s vs yt-dlp's ~15s)
-- `downloadAudioChunk(url, outputPath, startTime, endTime, options)` — yt-dlp audio download with phase-aware progress
-- `downloadVideoChunk(url, outputPath, startTime, endTime, options)` — yt-dlp video download
-- `transcribeAudioChunk(audioPath, options)` — OpenAI Whisper API
-- `addPunctuation(transcript, options)` — GPT-4o punctuation + spelling correction with two-pointer word alignment
-- `createHeartbeat(onProgress, type, messageBuilder, intervalMs)` — Progress heartbeat during long operations
-- `stripPunctuation(word)`, `editDistance(a, b)`, `isFuzzyMatch(a, b)` — String utilities for word alignment
-
-**`server/chunking.js` — Chunking logic:**
-- `createChunks(transcript)` — Splits at natural pauses (>0.5s gaps), targets ~3min chunks, merges final chunk if <2min
-- `getChunkTranscript(transcript, startTime, endTime)` — Extract and time-adjust words/segments for a chunk
-- `formatTime(seconds)` — Format as "MM:SS"
-
-**`server/index.js` — Key internal state:**
-- `analysisSessions` Map — Session data (backed by GCS in production)
-- `urlSessionCache` Map — URL → sessionId for instant re-access
-- `translationCache` Map — Translation results
-- `progressClients` Map — Active SSE connections
-- `prefetchNextChunk()` — Background download of next chunk after current completes
-
 ### Frontend
 
-- `App.tsx` — State machine managing view transitions, SSE subscriptions
-- `src/services/api.ts` — API client with SSE + polling fallback. SSE connects directly to backend (bypasses Vite proxy buffering in dev)
-- `src/types/index.ts` — Shared types: `WordTimestamp`, `Transcript`, `VideoChunk`, `SessionResponse`, `ProgressState`
+- `App.tsx` — State machine managing view transitions, SSE subscriptions. Two content modes: `video` (ok.ru) and `text` (lib.ru)
+- `src/services/api.ts` — API client with SSE + polling fallback
+- `src/types/index.ts` — Shared types: `WordTimestamp`, `Transcript`, `VideoChunk`, `SessionResponse`, `ProgressState`, `SRSCard`
+
+### SRS Flashcard System
+
+- `src/hooks/useDeck.ts` — Deck state with Firestore persistence (debounced 500ms writes). Accepts `userId` from `useAuth`. Falls back to localStorage if Firestore is unavailable. Migrates existing localStorage data to Firestore on first load.
+- `src/hooks/useAuth.ts` — Google Sign-In via `signInWithPopup` + `GoogleAuthProvider`. Tracks state via `onAuthStateChanged`. Returns `{ userId, user, isLoading, signInWithGoogle, signOut }`. Includes E2E test bypass (build-time `VITE_E2E_TEST` env var).
+- `src/firebase.ts` — Firebase app/auth/firestore initialization. Config from `VITE_FIREBASE_*` env vars.
+- `src/utils/sm2.ts` — SM-2 spaced repetition algorithm with Anki-like learning steps (1min/5min) and graduated review intervals.
+- `src/components/ReviewPanel.tsx` — Flashcard review UI with keyboard shortcuts (1-4 for ratings, Space/Enter for show/good).
+- `firestore.rules` — Security rules: `decks/{userId}` writable only by matching `auth.uid`. Deploy with `firebase deploy --only firestore:rules`.
+- Sentence extraction: scans the words array for sentence-ending punctuation (`.!?…`) to extract only the containing sentence as flashcard context, not the full Whisper segment.
+
+### Word Frequency Highlighting
+
+- `public/russian-word-frequencies.json` — 92K Russian words sorted by frequency rank
+- `TranscriptPanel` underlines words in a configurable frequency rank range (e.g., rank 500–1000)
+- Normalization: ё→е for both frequency lookup and card deduplication (`normalizeCardId` in `sm2.ts`)
 
 ### Deployment
 
-Production uses Google Cloud Run + GCS + Firebase Hosting:
+GCP project: `book-friend-finder`, Cloud Run service: `russian-transcription`, region: `us-central1`.
+
 - `./deploy.sh` — Full deploy with secrets, GCS bucket setup, lifecycle policies
-- `./quick-deploy.sh` — Fast local Docker build + push
+- `./quick-deploy.sh` — Fast local Docker build + push (`npm run build` → copy dist to server → docker build → push → `gcloud run deploy`)
+- `server/Dockerfile` — Extends `russian-base:latest` (node:20-slim + ffmpeg + yt-dlp, built by `build-base.sh`)
+- Frontend hosted from Cloud Run (dist copied into Docker image), not Firebase Hosting in production
 
 ## Tech Stack
 
 - React 19 + TypeScript + Vite 7, Tailwind CSS v4
 - Express.js with Server-Sent Events
-- OpenAI Whisper API (transcription) + GPT-4o (punctuation/spelling)
+- Firebase Google Sign-In + Firestore (flashcard persistence)
+- OpenAI Whisper API (transcription) + GPT-4o (punctuation/spelling) + TTS (text mode audio)
 - Google Translate API, Google Cloud Storage
 - yt-dlp + ffmpeg (video/audio processing)
+
+## Important Behavioral Rules
+
+- **Word click = translate only, NOT seek.** Clicking a word in the transcript shows a translation popup. It must NOT seek/jump the video to that word's timestamp. The video continues playing normally.
 
 ## Known Limitations
 
@@ -146,3 +190,32 @@ Production uses Google Cloud Run + GCS + Firebase Hosting:
 - **Long videos**: Split into 3-5 min chunks, loaded in batches
 - **Local sessions**: In-memory only, lost on restart (production persists to GCS)
 - **ok.ru extraction**: Takes 90-120s due to anti-bot JS protection (`ESTIMATED_EXTRACTION_TIME = 100`)
+
+## Production Roadmap
+
+### Authentication & Payment (Priority: HIGH)
+- ~~Migrate from Firebase Anonymous Auth to Google OAuth~~ (DONE — PR #8)
+- ~~Per-user rate limiting + cost tracking~~ (DONE — PR #8)
+- Add Stripe subscription: $10/month, first month free
+- Android app planned (React Native or PWA wrapper)
+- Track per-user API usage (Whisper minutes, translations, TTS calls)
+- Enforce usage quotas per tier (free trial vs paid)
+
+### Session Security
+- Replace timestamp-based session IDs with crypto.randomUUID()
+- Add session ownership (tie sessions to authenticated user)
+- Validate session access (users can only access their own sessions)
+
+### Monitoring & Error Tracking
+- Add Sentry or equivalent for error alerting
+- Cloud Run error rate alerts via GCP Monitoring
+- Track API costs per user for billing decisions
+
+### Data Persistence
+- Server-side deck backup (currently localStorage + Firestore)
+- Export/import deck functionality
+
+### CI/CD
+- Add `node --check server/index.js` to deploy.sh (prevent syntax crashes)
+- Add `npm test` to deploy.sh before deploying
+- Consider GitHub Actions for automated testing on push
