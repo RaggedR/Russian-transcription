@@ -1,5 +1,11 @@
 import { render } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
+
+// Mock API module to prevent transitive firebase import
+vi.mock('../src/services/api', () => ({
+  apiRequest: vi.fn().mockResolvedValue({ sentence: '', translation: '' }),
+}));
+
 import { WordPopup } from '../src/components/WordPopup';
 
 describe('WordPopup positioning', () => {
