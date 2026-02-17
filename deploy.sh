@@ -5,9 +5,10 @@ set -e
 # Russian Tin-Tin Deployment Script
 # ============================================
 
-PROJECT_ID="book-friend-finder"
+PROJECT_ID="russian-transcription"
 REGION="us-central1"
 SERVICE_NAME="russian-transcription"
+MAX_INSTANCES=1  # Cap Cloud Run scaling to control costs (change as needed)
 
 # Colors for output
 RED='\033[0;31m'
@@ -125,6 +126,7 @@ gcloud run deploy $SERVICE_NAME \
     --set-env-vars="GCS_BUCKET=${GCS_BUCKET}" \
     --memory 1Gi \
     --timeout 300 \
+    --max-instances $MAX_INSTANCES \
     --quiet
 
 cd ..
@@ -179,6 +181,18 @@ EOF
 fi
 
 firebase deploy --only hosting
+
+echo -e "${YELLOW}Cleaning up old Docker images...${NC}"
+IMAGE="gcr.io/${PROJECT_ID}/${SERVICE_NAME}"
+OLD_DIGESTS=$(gcloud container images list-tags $IMAGE --filter="NOT tags:latest" --format="value(digest)" 2>/dev/null)
+if [ -n "$OLD_DIGESTS" ]; then
+    for digest in $OLD_DIGESTS; do
+        gcloud container images delete "$IMAGE@sha256:$digest" --quiet --force-delete-tags 2>/dev/null || true
+    done
+    echo "Cleanup complete."
+else
+    echo "No old images to clean up."
+fi
 
 echo ""
 echo -e "${GREEN}=== Deployment Complete ===${NC}"

@@ -3,8 +3,9 @@ set -e
 
 # Quick deploy - uses local Docker for fast builds (~15-20s)
 
-IMAGE="gcr.io/book-friend-finder/russian-transcription"
+IMAGE="gcr.io/russian-transcription/russian-transcription"
 GCS_BUCKET="russian-transcription-videos"
+MAX_INSTANCES=1  # Cap Cloud Run scaling to control costs (change as needed)
 
 # Ensure GCS bucket exists
 if ! gsutil ls -b gs://${GCS_BUCKET} &>/dev/null; then
@@ -34,7 +35,19 @@ gcloud run deploy russian-transcription \
     --allow-unauthenticated \
     --memory 1Gi \
     --timeout 300 \
+    --max-instances $MAX_INSTANCES \
     --set-secrets="OPENAI_API_KEY=openai-api-key:latest,GOOGLE_TRANSLATE_API_KEY=google-translate-key:latest" \
     --set-env-vars="GCS_BUCKET=russian-transcription-videos"
+
+echo "Cleaning up old Docker images..."
+OLD_DIGESTS=$(gcloud container images list-tags $IMAGE --filter="NOT tags:latest" --format="value(digest)" 2>/dev/null)
+if [ -n "$OLD_DIGESTS" ]; then
+    for digest in $OLD_DIGESTS; do
+        gcloud container images delete "$IMAGE@sha256:$digest" --quiet --force-delete-tags 2>/dev/null || true
+    done
+    echo "Cleanup complete."
+else
+    echo "No old images to clean up."
+fi
 
 echo "Done!"

@@ -141,7 +141,6 @@ export function TranscriptPanel({
           method: 'POST',
           body: JSON.stringify({
             word: word.word,
-            googleApiKey: config.googleApiKey,
           }),
         });
         setTranslation(data);
@@ -151,7 +150,7 @@ export function TranscriptPanel({
         setIsTranslating(false);
       }
     },
-    [config.googleApiKey, transcript.segments]
+    [transcript.segments]
   );
 
   const handleClosePopup = useCallback(() => {

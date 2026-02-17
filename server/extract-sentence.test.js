@@ -10,6 +10,28 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import http from 'http';
 
+// Mock auth.js — bypass Firebase Admin token verification in tests
+vi.mock('./auth.js', () => ({
+  requireAuth: (req, res, next) => {
+    req.uid = 'test-user';
+    req.userEmail = 'test@example.com';
+    next();
+  },
+}));
+
+// Mock usage.js — bypass budget checks in tests
+vi.mock('./usage.js', () => ({
+  requireBudget: (req, res, next) => next(),
+  requireTranslateBudget: (req, res, next) => next(),
+  trackCost: () => {},
+  trackTranslateCost: () => {},
+  getUserCost: () => 0,
+  getUserWeeklyCost: () => 0,
+  getUserMonthlyCost: () => 0,
+  getRemainingBudget: () => 1,
+  costs: { whisper: () => 0, gpt4o: () => 0, gpt4oMini: () => 0, tts: () => 0, translate: () => 0 },
+}));
+
 // Mock media.js so the server can start without real dependencies
 vi.mock('./media.js', () => ({
   getOkRuVideoInfo: vi.fn(),

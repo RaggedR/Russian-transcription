@@ -8,8 +8,11 @@ import ytdlpBase from 'yt-dlp-exec';
 import dotenv from 'dotenv';
 import { Storage } from '@google-cloud/storage';
 import { spawn } from 'child_process';
+import rateLimit from 'express-rate-limit';
 import { createChunks, createTextChunks, getChunkTranscript, formatTime } from './chunking.js';
 import { downloadAudioChunk, downloadVideoChunk, transcribeAudioChunk, addPunctuation, lemmatizeWords, getOkRuVideoInfo, isLibRuUrl, fetchLibRuText, generateTtsAudio, getAudioDuration, estimateWordTimestamps } from './media.js';
+import { requireAuth } from './auth.js';
+import { trackCost, requireBudget, costs, trackTranslateCost, requireTranslateBudget } from './usage.js';
 
 // Use system yt-dlp binary instead of bundled one (bundled version may be outdated)
 const ytdlp = ytdlpBase.create('yt-dlp');
@@ -404,6 +407,78 @@ const PORT = process.env.PORT || 3001;
 app.use(cors());
 app.use(express.json());
 
+// Health check — before auth so monitoring works without tokens
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok' });
+});
+
+// Auth middleware — all /api routes below require a valid Firebase ID token
+app.use('/api', requireAuth);
+
+// Per-user rate limiters for expensive endpoints
+// Disabled during tests (vitest sets process.env.VITEST automatically)
+const skipInTest = process.env.VITEST ? () => true : () => false;
+
+const analyzeRateLimit = rateLimit({
+  windowMs: 60 * 1000,
+  max: 3,
+  keyGenerator: (req) => req.uid,
+  message: { error: 'Too many analysis requests. Please wait a minute before trying again.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: skipInTest,
+});
+
+const analyzeDailyLimit = rateLimit({
+  windowMs: 24 * 60 * 60 * 1000,
+  max: 5,
+  keyGenerator: (req) => req.uid,
+  message: { error: 'Daily limit reached (5 videos/day). Please try again tomorrow.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: skipInTest,
+});
+
+const loadMoreRateLimit = rateLimit({
+  windowMs: 60 * 1000,
+  max: 3,
+  keyGenerator: (req) => req.uid,
+  message: { error: 'Too many load requests. Please wait a minute before trying again.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: skipInTest,
+});
+
+const downloadChunkRateLimit = rateLimit({
+  windowMs: 60 * 1000,
+  max: 10,
+  keyGenerator: (req) => req.uid,
+  message: { error: 'Too many download requests. Please wait a minute.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: skipInTest,
+});
+
+const translateRateLimit = rateLimit({
+  windowMs: 60 * 1000,
+  max: 60,
+  keyGenerator: (req) => req.uid,
+  message: { error: 'Translation rate limit reached. Please slow down.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: skipInTest,
+});
+
+const extractSentenceRateLimit = rateLimit({
+  windowMs: 60 * 1000,
+  max: 10,
+  keyGenerator: (req) => req.uid,
+  message: { error: 'Sentence extraction rate limit reached. Please wait.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: skipInTest,
+});
+
 // Translation cache (in-memory for simplicity, could use Redis in production)
 const translationCache = new Map();
 
@@ -606,7 +681,7 @@ app.post('/api/transcribe', async (req, res) => {
  * Accepts: { word: string, googleApiKey: string }
  * Returns: { word: string, translation: string, sourceLanguage: string }
  */
-app.post('/api/translate', async (req, res) => {
+app.post('/api/translate', translateRateLimit, requireTranslateBudget, async (req, res) => {
   const { word, googleApiKey } = req.body;
   const apiKey = googleApiKey || process.env.GOOGLE_TRANSLATE_API_KEY;
 
@@ -656,6 +731,7 @@ app.post('/api/translate', async (req, res) => {
 
     // Cache result
     translationCache.set(cacheKey, result);
+    trackTranslateCost(req.uid, costs.translate(word.length));
 
     res.json(result);
   } catch (error) {
@@ -673,7 +749,7 @@ app.post('/api/translate', async (req, res) => {
  * Accepts: { text: string, word: string }
  * Returns: { sentence: string, translation: string }
  */
-app.post('/api/extract-sentence', async (req, res) => {
+app.post('/api/extract-sentence', extractSentenceRateLimit, requireBudget, async (req, res) => {
   const { text, word } = req.body;
 
   if (!text || !word) {
@@ -708,16 +784,12 @@ app.post('/api/extract-sentence', async (req, res) => {
 
     const data = await response.json();
     const result = JSON.parse(data.choices[0].message.content);
+    trackCost(req.uid, costs.gpt4oMini());
     res.json({ sentence: result.sentence, translation: result.translation });
   } catch (error) {
     console.error('[ExtractSentence] Error:', error);
     res.status(500).json({ error: error.message || 'Sentence extraction failed' });
   }
-});
-
-// Health check endpoint
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok' });
 });
 
 /**
@@ -1022,7 +1094,7 @@ function createProgressCallback(sessionId) {
  * Returns: { sessionId, status: 'started' }
  * Progress sent via SSE, completion includes hasMoreChunks flag
  */
-app.post('/api/analyze', async (req, res) => {
+app.post('/api/analyze', analyzeRateLimit, analyzeDailyLimit, requireBudget, async (req, res) => {
   const { url } = req.body;
   const apiKey = process.env.OPENAI_API_KEY;
 
@@ -1055,10 +1127,14 @@ app.post('/api/analyze', async (req, res) => {
     fs.mkdirSync(tempDir, { recursive: true });
   }
 
+  // Capture uid for cost tracking in background task
+  const uid = req.uid;
+
   // Initialize session
   analysisSessions.set(sessionId, {
     status: 'downloading',
     url,
+    uid,
     progress: { audio: 0, transcription: 0 },
   });
 
@@ -1193,9 +1269,11 @@ app.post('/api/analyze', async (req, res) => {
 
       // Transcribe audio
       const rawTranscript = await transcribeAudioChunk(audioPath, { onProgress });
+      trackCost(uid, costs.whisper(downloadEndTime));
 
       // Add punctuation via LLM
       const fullBatchTranscript = await addPunctuation(rawTranscript, { onProgress });
+      trackCost(uid, costs.gpt4o());
 
       // Lemmatization deferred to per-chunk download (faster on ~3min chunks vs full 15min)
 
@@ -1275,7 +1353,7 @@ app.post('/api/analyze', async (req, res) => {
  * Request: { sessionId }
  * Returns: { chunks: [...new chunks...], hasMoreChunks }
  */
-app.post('/api/load-more-chunks', async (req, res) => {
+app.post('/api/load-more-chunks', loadMoreRateLimit, async (req, res) => {
   const { sessionId } = req.body;
 
   console.log(`[LoadMore] Request for session ${sessionId}`);
@@ -1656,7 +1734,7 @@ app.get('/api/session/:sessionId/chunk/:chunkId', async (req, res) => {
  * Request: { sessionId, chunkId, startTime, endTime }
  * Returns: { videoUrl, transcript }
  */
-app.post('/api/download-chunk', async (req, res) => {
+app.post('/api/download-chunk', downloadChunkRateLimit, requireBudget, async (req, res) => {
   const { sessionId, chunkId } = req.body;
 
   const session = await getAnalysisSession(sessionId);
@@ -1732,6 +1810,7 @@ app.post('/api/download-chunk', async (req, res) => {
 
       // Step 1: Generate TTS audio
       await generateTtsAudio(chunkText, audioPath, { onProgress });
+      trackCost(req.uid, costs.tts(chunkText.length));
 
       // Step 2: Get audio duration and estimate word timestamps proportionally
       const duration = await getAudioDuration(audioPath);
@@ -1739,6 +1818,7 @@ app.post('/api/download-chunk', async (req, res) => {
 
       // Lemmatize words for frequency matching
       const chunkTranscript = await lemmatizeWords(rawChunkTranscript, { onProgress });
+      trackCost(req.uid, costs.gpt4o());
 
       // Serve audio locally or upload to GCS
       let audioUrl;
@@ -1821,6 +1901,7 @@ app.post('/api/download-chunk', async (req, res) => {
     // Get chunk transcript with adjusted timestamps, then lemmatize per-chunk
     const rawChunkTranscript = getChunkTranscript(session.transcript, startTime, endTime);
     const chunkTranscript = await lemmatizeWords(rawChunkTranscript, { onProgress });
+    trackCost(req.uid, costs.gpt4o());
     console.log(`[Download-Chunk] Chunk ${chunkId}: startTime=${startTime}, endTime=${endTime}`);
     console.log(`[Download-Chunk] Full transcript has ${session.transcript.words?.length} words`);
     console.log(`[Download-Chunk] Chunk transcript has ${chunkTranscript.words?.length} words`);
@@ -1924,9 +2005,11 @@ async function prefetchNextChunk(sessionId, currentChunkIndex) {
 
       const silentProgress = () => {};
       await generateTtsAudio(chunkText, audioPath, { onProgress: silentProgress });
+      if (session.uid) { trackCost(session.uid, costs.tts(chunkText.length)); }
       const duration = await getAudioDuration(audioPath);
       const rawChunkTranscript = estimateWordTimestamps(chunkText, duration);
       const chunkTranscript = await lemmatizeWords(rawChunkTranscript, { onProgress: silentProgress });
+      if (session.uid) { trackCost(session.uid, costs.gpt4o()); }
 
       let audioUrl;
       if (!IS_LOCAL && bucket) {
@@ -1978,6 +2061,7 @@ async function prefetchNextChunk(sessionId, currentChunkIndex) {
     // Get transcript and lemmatize per-chunk
     const rawChunkTranscript = getChunkTranscript(session.transcript, startTime, endTime);
     const chunkTranscript = await lemmatizeWords(rawChunkTranscript, { onProgress: () => {} });
+    if (session.uid) { trackCost(session.uid, costs.gpt4o()); }
 
     // Upload to GCS
     let videoUrl;

@@ -11,6 +11,41 @@ import http from 'http';
 import fs from 'fs';
 
 // ---------------------------------------------------------------------------
+// Mock auth.js — bypass Firebase Admin token verification in tests
+// ---------------------------------------------------------------------------
+
+vi.mock('./auth.js', () => ({
+  requireAuth: (req, res, next) => {
+    req.uid = 'test-user';
+    req.userEmail = 'test@example.com';
+    next();
+  },
+}));
+
+// ---------------------------------------------------------------------------
+// Mock usage.js — bypass budget checks in tests (costs accumulate across
+// tests sharing the same uid, which would trigger 429s mid-suite)
+// ---------------------------------------------------------------------------
+
+vi.mock('./usage.js', () => ({
+  requireBudget: (req, res, next) => next(),
+  requireTranslateBudget: (req, res, next) => next(),
+  trackCost: () => {},
+  trackTranslateCost: () => {},
+  getUserCost: () => 0,
+  getUserWeeklyCost: () => 0,
+  getUserMonthlyCost: () => 0,
+  getRemainingBudget: () => 1,
+  costs: {
+    whisper: () => 0,
+    gpt4o: () => 0,
+    gpt4oMini: () => 0,
+    tts: () => 0,
+    translate: () => 0,
+  },
+}));
+
+// ---------------------------------------------------------------------------
 // Mock media.js — replaces all 5 external-facing functions
 // ---------------------------------------------------------------------------
 
