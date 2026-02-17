@@ -55,6 +55,8 @@ function useAuthReal(): AuthState {
 
 // E2E test bypass — return a mock user immediately so Playwright tests
 // don't need real Google auth. The env var is set in playwright.config.ts.
+// Note: import.meta.env.VITE_E2E_TEST is resolved at build time by Vite,
+// so production builds (without the env var) always use useAuthReal.
 function useAuthE2E(): AuthState {
   return {
     userId: 'e2e-test-user',

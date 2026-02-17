@@ -149,7 +149,7 @@ Express.js on port 3001 (local) / `PORT` env var (Cloud Run). Three main files:
 ### SRS Flashcard System
 
 - `src/hooks/useDeck.ts` — Deck state with Firestore persistence (debounced 500ms writes). Accepts `userId` from `useAuth`. Falls back to localStorage if Firestore is unavailable. Migrates existing localStorage data to Firestore on first load.
-- `src/hooks/useAuth.ts` — Firebase Anonymous Auth. Calls `signInAnonymously()` on mount, tracks state via `onAuthStateChanged`. Returns `{ userId, isLoading }`.
+- `src/hooks/useAuth.ts` — Google Sign-In via `signInWithPopup` + `GoogleAuthProvider`. Tracks state via `onAuthStateChanged`. Returns `{ userId, user, isLoading, signInWithGoogle, signOut }`. Includes E2E test bypass (build-time `VITE_E2E_TEST` env var).
 - `src/firebase.ts` — Firebase app/auth/firestore initialization. Config from `VITE_FIREBASE_*` env vars.
 - `src/utils/sm2.ts` — SM-2 spaced repetition algorithm with Anki-like learning steps (1min/5min) and graduated review intervals.
 - `src/components/ReviewPanel.tsx` — Flashcard review UI with keyboard shortcuts (1-4 for ratings, Space/Enter for show/good).
@@ -175,7 +175,7 @@ GCP project: `book-friend-finder`, Cloud Run service: `russian-transcription`, r
 
 - React 19 + TypeScript + Vite 7, Tailwind CSS v4
 - Express.js with Server-Sent Events
-- Firebase Anonymous Auth + Firestore (flashcard persistence)
+- Firebase Google Sign-In + Firestore (flashcard persistence)
 - OpenAI Whisper API (transcription) + GPT-4o (punctuation/spelling) + TTS (text mode audio)
 - Google Translate API, Google Cloud Storage
 - yt-dlp + ffmpeg (video/audio processing)
@@ -194,18 +194,12 @@ GCP project: `book-friend-finder`, Cloud Run service: `russian-transcription`, r
 ## Production Roadmap
 
 ### Authentication & Payment (Priority: HIGH)
-- Migrate from Firebase Anonymous Auth to email/password + Google OAuth
+- ~~Migrate from Firebase Anonymous Auth to Google OAuth~~ (DONE — PR #8)
+- ~~Per-user rate limiting + cost tracking~~ (DONE — PR #8)
 - Add Stripe subscription: $10/month, first month free
 - Android app planned (React Native or PWA wrapper)
 - Track per-user API usage (Whisper minutes, translations, TTS calls)
 - Enforce usage quotas per tier (free trial vs paid)
-
-### Rate Limiting (Priority: HIGH)
-- Add express-rate-limit middleware to server/index.js
-- Per-IP: 10 req/min on /api/analyze (expensive: Whisper + yt-dlp)
-- Per-IP: 60 req/min on /api/translate
-- Per-IP: 5 req/min on /api/extract-sentence (GPT calls)
-- Global: budget cap on OpenAI API spend
 
 ### Session Security
 - Replace timestamp-based session IDs with crypto.randomUUID()
