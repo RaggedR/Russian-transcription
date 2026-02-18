@@ -11,6 +11,7 @@ import { Storage } from '@google-cloud/storage';
 import { spawn } from 'child_process';
 import rateLimit from 'express-rate-limit';
 import * as Sentry from '@sentry/node';
+import { LRUCache } from 'lru-cache';
 import { createChunks, createTextChunks, getChunkTranscript, formatTime } from './chunking.js';
 import { downloadAudioChunk, downloadVideoChunk, transcribeAudioChunk, addPunctuation, lemmatizeWords, getOkRuVideoInfo, isLibRuUrl, fetchLibRuText, generateTtsAudio, getAudioDuration, estimateWordTimestamps } from './media.js';
 import { requireAuth, adminAuth } from './auth.js';
@@ -38,14 +39,26 @@ if (!IS_LOCAL) {
   console.log('[Storage] Using in-memory storage (local mode)');
 }
 
+/**
+ * Generate a signed URL for a GCS file (24h expiry).
+ * Requires the service account to have roles/iam.serviceAccountTokenCreator.
+ */
+async function getSignedMediaUrl(gcsFileName) {
+  const [signedUrl] = await bucket.file(gcsFileName).getSignedUrl({
+    action: 'read',
+    expires: Date.now() + 24 * 60 * 60 * 1000, // 24 hours
+  });
+  return signedUrl;
+}
+
 // In-memory session storage for local development
 const localSessions = new Map();
 
 // SSE clients for progress updates
 const progressClients = new Map();
 
-// Analysis sessions (for chunking workflow)
-const analysisSessions = new Map();
+// Analysis sessions (for chunking workflow) — LRU-bounded to prevent memory leaks
+const analysisSessions = new LRUCache({ max: 50 });
 
 // URL to session ID cache (for reusing existing analysis)
 // Maps normalized URL -> { sessionId, timestamp }
@@ -600,6 +613,8 @@ app.delete('/api/account', async (req, res) => {
     }
 
     // 2. Delete GCS sessions owned by the user
+    // TODO: Store uid in GCS filename prefix (sessions/{uid}_{sessionId}.json)
+    // so we can list by prefix instead of downloading/parsing all sessions.
     if (!IS_LOCAL && bucket) {
       try {
         const [sessionFiles] = await bucket.getFiles({ prefix: 'sessions/' });
@@ -655,8 +670,8 @@ app.delete('/api/account', async (req, res) => {
   }
 });
 
-// Translation cache (in-memory for simplicity, could use Redis in production)
-const translationCache = new Map();
+// Translation cache — LRU-bounded to prevent unbounded growth
+const translationCache = new LRUCache({ max: 10000 });
 
 /**
  * POST /api/translate
@@ -1791,15 +1806,14 @@ app.post('/api/download-chunk', downloadChunkRateLimit, requireBudget, requireSe
     });
   }
 
-  // If already being downloaded (e.g. by prefetch), wait for it to finish
-  if (chunk.status === 'downloading') {
+  // If already being downloaded (e.g. by prefetch), await its completion promise
+  if (chunk.status === 'downloading' && chunk.downloadPromise) {
     const partNum = parseInt(chunkId.split('-')[1]) + 1;
-    // Poll until the chunk becomes ready (prefetch will finish it)
-    const maxWait = 120000; // 2 minutes
-    const pollInterval = 500;
-    const startWait = Date.now();
-    while (Date.now() - startWait < maxWait) {
-      await new Promise(r => setTimeout(r, pollInterval));
+    try {
+      await Promise.race([
+        chunk.downloadPromise,
+        new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 120000)),
+      ]);
       if (chunk.status === 'ready' && (chunk.videoUrl || chunk.audioUrl)) {
         const transcript = session.chunkTranscripts.get(chunkId);
         return res.json({
@@ -1809,14 +1823,9 @@ app.post('/api/download-chunk', downloadChunkRateLimit, requireBudget, requireSe
           title: `${session.title} - Part ${partNum}`,
         });
       }
-      if (chunk.status === 'pending') {
-        // Prefetch failed, fall through to download below
-        break;
-      }
-    }
-    // If still downloading after timeout, fall through to re-download
-    if (chunk.status === 'downloading') {
-      console.log(`[Download-Chunk] Prefetch timeout for ${chunkId}, re-downloading`);
+    } catch {
+      // Timeout or prefetch failed — fall through to re-download
+      console.log(`[Download-Chunk] Prefetch wait failed for ${chunkId}, re-downloading`);
     }
   }
 
@@ -1859,8 +1868,7 @@ app.post('/api/download-chunk', downloadChunkRateLimit, requireBudget, requireSe
           destination: gcsFileName,
           metadata: { contentType: 'audio/mpeg', cacheControl: 'public, max-age=86400' },
         });
-        await bucket.file(gcsFileName).makePublic();
-        audioUrl = `https://storage.googleapis.com/${bucket.name}/${gcsFileName}`;
+        audioUrl = await getSignedMediaUrl(gcsFileName);
         if (fs.existsSync(audioPath)) fs.unlinkSync(audioPath);
       } else {
         audioUrl = `/api/local-audio/${sessionId}_${chunkId}.mp3`;
@@ -1952,8 +1960,7 @@ app.post('/api/download-chunk', downloadChunkRateLimit, requireBudget, requireSe
           cacheControl: 'public, max-age=86400',
         },
       });
-      await bucket.file(gcsFileName).makePublic();
-      videoUrl = `https://storage.googleapis.com/${bucket.name}/${gcsFileName}`;
+      videoUrl = await getSignedMediaUrl(gcsFileName);
 
       // Clean up local chunk file
       if (fs.existsSync(chunkPath)) {
@@ -2025,6 +2032,9 @@ async function prefetchNextChunk(sessionId, currentChunkIndex) {
     const tempDir = path.join(__dirname, 'temp');
     nextChunk.status = 'downloading';
 
+    // Store a promise so download-chunk can await it instead of busy-polling
+    const doWork = async () => {
+
     // ── Text mode prefetch ──
     if (session.contentType === 'text') {
       const audioPath = path.join(tempDir, `tts_${sessionId}_${nextChunk.id}.mp3`);
@@ -2051,8 +2061,7 @@ async function prefetchNextChunk(sessionId, currentChunkIndex) {
           destination: gcsFileName,
           metadata: { contentType: 'audio/mpeg', cacheControl: 'public, max-age=86400' },
         });
-        await bucket.file(gcsFileName).makePublic();
-        audioUrl = `https://storage.googleapis.com/${bucket.name}/${gcsFileName}`;
+        audioUrl = await getSignedMediaUrl(gcsFileName);
         if (fs.existsSync(audioPath)) fs.unlinkSync(audioPath);
       } else {
         audioUrl = `/api/local-audio/${sessionId}_${nextChunk.id}.mp3`;
@@ -2104,8 +2113,7 @@ async function prefetchNextChunk(sessionId, currentChunkIndex) {
         destination: gcsFileName,
         metadata: { contentType: 'video/mp4', cacheControl: 'public, max-age=86400' },
       });
-      await bucket.file(gcsFileName).makePublic();
-      videoUrl = `https://storage.googleapis.com/${bucket.name}/${gcsFileName}`;
+      videoUrl = await getSignedMediaUrl(gcsFileName);
       if (fs.existsSync(chunkPath)) fs.unlinkSync(chunkPath);
     } else {
       videoUrl = `/api/local-video/${sessionId}_${nextChunk.id}.mp4`;
@@ -2119,6 +2127,19 @@ async function prefetchNextChunk(sessionId, currentChunkIndex) {
     await setAnalysisSession(sessionId, session);
 
     console.log(`[Prefetch] Completed ${nextChunk.id} (${(videoSize / 1024 / 1024).toFixed(1)} MB)`);
+
+    }; // end doWork
+
+    // Store promise on chunk so download-chunk handler can await it
+    nextChunk.downloadPromise = doWork().catch(err => {
+      nextChunk.status = 'pending';
+      delete nextChunk.downloadPromise;
+      throw err;
+    }).then(() => {
+      delete nextChunk.downloadPromise;
+    });
+
+    await nextChunk.downloadPromise;
   } catch (err) {
     console.error(`[Prefetch] Error:`, err.message);
     Sentry.captureException(err, { tags: { operation: 'prefetch', sessionId } });
