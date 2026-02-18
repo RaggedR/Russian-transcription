@@ -140,7 +140,7 @@ function App() {
 
   // Auth + Spaced repetition deck
   const { userId, user, isLoading: authLoading, signInWithGoogle, signOut } = useAuth();
-  const { cards, dueCards, dueCount, addCard, removeCard, reviewCard, isWordInDeck } = useDeck(userId);
+  const { cards, dueCards, dueCount, addCard, removeCard, reviewCard, isWordInDeck, saveError, clearSaveError } = useDeck(userId);
   const [isReviewOpen, setIsReviewOpen] = useState(false);
 
   // Word frequency data
@@ -725,6 +725,14 @@ function App() {
           </div>
         </div>
       </header>
+
+      {/* Firestore save error banner */}
+      {saveError && (
+        <div className="bg-amber-50 border-b border-amber-200 px-4 py-2 flex items-center justify-between" data-testid="save-error-banner">
+          <p className="text-amber-800 text-sm">{saveError}</p>
+          <button onClick={clearSaveError} className="text-amber-600 hover:text-amber-800 text-sm ml-4">Dismiss</button>
+        </div>
+      )}
 
       {/* Main content */}
       <main className="max-w-6xl mx-auto px-4 py-8">

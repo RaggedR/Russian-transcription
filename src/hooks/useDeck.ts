@@ -1,5 +1,6 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
+import * as Sentry from '@sentry/react';
 import { db } from '../firebase';
 import type { SRSCard, SRSRating } from '../types';
 import { createCard, sm2, getDueCards as getDueCardsFromAll, normalizeCardId } from '../utils/sm2';
@@ -19,12 +20,23 @@ function loadLocalDeck(): SRSCard[] {
   return [];
 }
 
+function saveLocalBackup(cards: SRSCard[]) {
+  try {
+    localStorage.setItem(DECK_KEY, JSON.stringify(cards));
+  } catch {
+    // localStorage full or unavailable
+  }
+}
+
 export function useDeck(userId: string | null) {
   const [cards, setCards] = useState<SRSCard[]>([]);
   const [loaded, setLoaded] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(null);
   // Track whether we've done the initial Firestore load for this userId
   const loadedUserRef = useRef<string | null>(null);
+
+  const clearSaveError = useCallback(() => setSaveError(null), []);
 
   // Persist cards to Firestore (debounced)
   const saveToFirestore = useCallback((nextCards: SRSCard[]) => {
@@ -32,9 +44,17 @@ export function useDeck(userId: string | null) {
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
       const deckRef = doc(db, 'decks', userId);
-      setDoc(deckRef, { cards: nextCards, updatedAt: serverTimestamp() }).catch(() => {
-        // Silent fail — data is still in React state, will retry on next mutation
-      });
+      setDoc(deckRef, { cards: nextCards, updatedAt: serverTimestamp() })
+        .then(() => {
+          setSaveError(null);
+        })
+        .catch((err) => {
+          console.error('[useDeck] Firestore save failed:', err);
+          Sentry.captureException(err, { tags: { operation: 'deck_save' } });
+          setSaveError('Deck changes may not be saved — check your connection');
+          // Fallback: persist to localStorage so data survives a refresh
+          saveLocalBackup(nextCards);
+        });
     }, DEBOUNCE_MS);
   }, [userId]);
 
@@ -120,5 +140,5 @@ export function useDeck(userId: string | null) {
     return cards.some(c => c.id === id);
   }, [cards]);
 
-  return { cards, dueCards, dueCount, addCard, removeCard, reviewCard, isWordInDeck, loaded };
+  return { cards, dueCards, dueCount, addCard, removeCard, reviewCard, isWordInDeck, loaded, saveError, clearSaveError };
 }
