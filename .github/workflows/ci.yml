@@ -84,6 +84,9 @@ jobs:
       VITE_FIREBASE_STORAGE_BUCKET: ${{ secrets.VITE_FIREBASE_STORAGE_BUCKET }}
       VITE_FIREBASE_MESSAGING_SENDER_ID: ${{ secrets.VITE_FIREBASE_MESSAGING_SENDER_ID }}
       VITE_FIREBASE_APP_ID: ${{ secrets.VITE_FIREBASE_APP_ID }}
+      SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+      SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+      SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
 
     steps:
       - uses: actions/checkout@v4
@@ -122,6 +125,7 @@ jobs:
       - name: Build frontend
         run: |
           echo "VITE_API_URL=${{ steps.get-url.outputs.backend_url }}" > .env.production
+          echo "VITE_SENTRY_DSN=${{ secrets.VITE_SENTRY_DSN }}" >> .env.production
           npm run build
 
       - name: Prepare server with frontend
@@ -152,7 +156,7 @@ jobs:
             --memory 1Gi \
             --timeout 300 \
             --max-instances 1 \
-            --set-secrets="OPENAI_API_KEY=openai-api-key:latest,GOOGLE_TRANSLATE_API_KEY=google-translate-key:latest" \
+            --set-secrets="OPENAI_API_KEY=openai-api-key:latest,GOOGLE_TRANSLATE_API_KEY=google-translate-key:latest,SENTRY_DSN=sentry-dsn:latest" \
             --set-env-vars="GCS_BUCKET=russian-transcription-videos"
 
       - name: Verify deployment
