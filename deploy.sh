@@ -59,13 +59,13 @@ echo -e "${YELLOW}Setting up GCS bucket...${NC}"
 if ! gsutil ls -b gs://${GCS_BUCKET} &>/dev/null; then
     echo "Creating bucket gs://${GCS_BUCKET}..."
     gsutil mb -l ${REGION} gs://${GCS_BUCKET}
-    # Set lifecycle rule to delete videos after 7 days
+    # Set lifecycle rule to delete user content after 7 days (exclude demo/ prefix)
     cat > /tmp/lifecycle.json << EOF
 {
   "rule": [
     {
       "action": {"type": "Delete"},
-      "condition": {"age": 7}
+      "condition": {"age": 7, "matchesPrefix": ["videos/", "sessions/", "cache/"]}
     }
   ]
 }

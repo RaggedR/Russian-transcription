@@ -12,7 +12,7 @@ import { ReviewPanel } from './components/ReviewPanel';
 import { LoginScreen } from './components/LoginScreen';
 import { useDeck } from './hooks/useDeck';
 import { useAuth } from './hooks/useAuth';
-import { apiRequest, subscribeToProgress, getSession, getChunk, downloadChunk, loadMoreChunks, deleteAccount } from './services/api';
+import { apiRequest, subscribeToProgress, getSession, getChunk, downloadChunk, loadMoreChunks, deleteAccount, loadDemo } from './services/api';
 import type {
   TranslatorConfig,
   AppView,
@@ -630,6 +630,44 @@ function App() {
     signOut();
   }, [signOut]);
 
+  const [isDemoLoading, setIsDemoLoading] = useState(false);
+
+  const handleLoadDemo = useCallback(async (type: 'video' | 'text') => {
+    setContentType(type);
+    contentTypeRef.current = type;
+    setError(null);
+    setIsDemoLoading(true);
+
+    try {
+      const response = await loadDemo(type);
+      const newSessionId = response.sessionId;
+      setSessionId(newSessionId);
+      setSessionTitle(response.title);
+      setSessionTotalDuration(response.totalDuration);
+      setHasMoreChunks(response.hasMoreChunks);
+      setOriginalUrl('');
+
+      const chunksWithStatus = response.chunks.map(c => ({
+        ...c,
+        status: c.status || 'pending' as const,
+        videoUrl: c.videoUrl || null,
+      }));
+      setSessionChunks(chunksWithStatus);
+
+      if (chunksWithStatus.length === 1 && !response.hasMoreChunks) {
+        const handler = type === 'text' ? handleSelectTextChunk : handleSelectVideoChunk;
+        setTimeout(() => handler(chunksWithStatus[0], newSessionId), 0);
+      } else {
+        setView('chunk-menu');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load demo');
+      setView('input');
+    } finally {
+      setIsDemoLoading(false);
+    }
+  }, [handleSelectVideoChunk, handleSelectTextChunk]);
+
   const handleReset = useCallback(() => {
     // Clean up SSE subscription
     if (progressCleanupRef.current) {
@@ -772,6 +810,47 @@ function App() {
             <div className="max-w-2xl mx-auto grid grid-cols-1 md:grid-cols-2 gap-6">
               <VideoInput onSubmit={handleAnalyzeVideo} isLoading={false} error={error} />
               <TextInput onSubmit={handleAnalyzeText} isLoading={false} error={error} />
+            </div>
+
+            {/* Demo buttons */}
+            <div className="max-w-2xl mx-auto">
+              <div className="flex items-center gap-4 my-6">
+                <div className="flex-1 border-t border-gray-300"></div>
+                <span className="text-sm text-gray-500">or try a demo</span>
+                <div className="flex-1 border-t border-gray-300"></div>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <button
+                  data-testid="demo-video-btn"
+                  onClick={() => handleLoadDemo('video')}
+                  disabled={isDemoLoading}
+                  className="px-4 py-3 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 hover:border-gray-400 transition-colors text-sm text-gray-700 disabled:opacity-50"
+                >
+                  {isDemoLoading && contentTypeRef.current === 'video' ? (
+                    <span className="flex items-center justify-center gap-2">
+                      <span className="inline-block animate-spin rounded-full h-4 w-4 border-2 border-blue-500 border-t-transparent"></span>
+                      Loading...
+                    </span>
+                  ) : (
+                    'Try Demo Video'
+                  )}
+                </button>
+                <button
+                  data-testid="demo-text-btn"
+                  onClick={() => handleLoadDemo('text')}
+                  disabled={isDemoLoading}
+                  className="px-4 py-3 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 hover:border-gray-400 transition-colors text-sm text-gray-700 disabled:opacity-50"
+                >
+                  {isDemoLoading && contentTypeRef.current === 'text' ? (
+                    <span className="flex items-center justify-center gap-2">
+                      <span className="inline-block animate-spin rounded-full h-4 w-4 border-2 border-blue-500 border-t-transparent"></span>
+                      Loading...
+                    </span>
+                  ) : (
+                    'Try Demo Text'
+                  )}
+                </button>
+              </div>
             </div>
           </div>
         )}

@@ -16,6 +16,7 @@ import {
   getTranslateDailyCost,
   getTranslateWeeklyCost,
   getTranslateMonthlyCost,
+  flushAllUsage,
   DAILY_LIMIT,
   WEEKLY_LIMIT,
   MONTHLY_LIMIT,
@@ -415,6 +416,17 @@ describe('usage.js', () => {
       const { req, res, next, wasNextCalled } = mockReqResNext(uid);
       requireBudget(req, res, next);
       expect(wasNextCalled()).toBe(true); // OpenAI should still work
+    });
+  });
+
+  // --- flushAllUsage -----------------------------------------------------------
+
+  describe('flushAllUsage', () => {
+    it('is a function that resolves without error (no Firestore in test)', async () => {
+      trackCost(uid, 0.10);
+      trackTranslateCost(uid, 0.05);
+      // Should not throw even without Firestore credentials
+      await expect(flushAllUsage()).resolves.toBeUndefined();
     });
   });
 });

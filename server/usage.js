@@ -56,31 +56,61 @@ const persistTimers = new Map();
  * Debounced write of a user's cost data to Firestore.
  * Multiple trackCost calls within 5s produce a single write.
  */
+async function writeUsageToFirestore(uid) {
+  const firestore = getDb();
+  if (!firestore) return;
+  await firestore.collection('usage').doc(uid).set({
+    openai: {
+      daily: dailyCosts.get(uid) || null,
+      weekly: weeklyCosts.get(uid) || null,
+      monthly: monthlyCosts.get(uid) || null,
+    },
+    translate: {
+      daily: translateDailyCosts.get(uid) || null,
+      weekly: translateWeeklyCosts.get(uid) || null,
+      monthly: translateMonthlyCosts.get(uid) || null,
+    },
+    updatedAt: new Date().toISOString(),
+  });
+}
+
 function persistUsage(uid) {
   if (persistTimers.has(uid)) clearTimeout(persistTimers.get(uid));
   persistTimers.set(uid, setTimeout(async () => {
     persistTimers.delete(uid);
-    const firestore = getDb();
-    if (!firestore) return;
     try {
-      await firestore.collection('usage').doc(uid).set({
-        openai: {
-          daily: dailyCosts.get(uid) || null,
-          weekly: weeklyCosts.get(uid) || null,
-          monthly: monthlyCosts.get(uid) || null,
-        },
-        translate: {
-          daily: translateDailyCosts.get(uid) || null,
-          weekly: translateWeeklyCosts.get(uid) || null,
-          monthly: translateMonthlyCosts.get(uid) || null,
-        },
-        updatedAt: new Date().toISOString(),
-      });
+      await writeUsageToFirestore(uid);
     } catch (err) {
       console.error(`[Usage] Persist failed for ${uid}:`, err.message);
       Sentry.captureException(err, { tags: { operation: 'usage_persist', uid }, level: 'warning' });
     }
   }, PERSIST_DEBOUNCE_MS));
+}
+
+/**
+ * Flush all pending debounced writes immediately.
+ * Call this on shutdown to avoid losing in-flight cost data.
+ */
+export async function flushAllUsage() {
+  // Cancel all pending timers
+  for (const [uid, timer] of persistTimers) {
+    clearTimeout(timer);
+    persistTimers.delete(uid);
+  }
+  // Collect all UIDs that have data
+  const uids = new Set([
+    ...dailyCosts.keys(), ...weeklyCosts.keys(), ...monthlyCosts.keys(),
+    ...translateDailyCosts.keys(), ...translateWeeklyCosts.keys(), ...translateMonthlyCosts.keys(),
+  ]);
+  if (uids.size === 0) return;
+  console.log(`[Usage] Flushing data for ${uids.size} users...`);
+  const writes = [...uids].map(uid =>
+    writeUsageToFirestore(uid).catch(err =>
+      console.error(`[Usage] Flush failed for ${uid}:`, err.message)
+    )
+  );
+  await Promise.all(writes);
+  console.log(`[Usage] Flush complete`);
 }
 
 /**

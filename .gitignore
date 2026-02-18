@@ -13,6 +13,9 @@ server/temp/
 server/*.mp3
 server/*.vtt
 
+# Demo media files (generated, too large for git)
+server/demo/media/
+
 # Logs
 logs
 *.log

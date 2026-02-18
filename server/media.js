@@ -10,6 +10,9 @@ import https from 'https';
 // Use system yt-dlp binary instead of bundled one
 const ytdlp = ytdlpBase.create('yt-dlp');
 
+// Shared browser User-Agent string for proxy and scraping requests
+export const BROWSER_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+
 // ok.ru extraction typically takes 90-120 seconds due to their anti-bot JS protection
 const ESTIMATED_EXTRACTION_TIME = 100; // seconds
 
@@ -56,7 +59,7 @@ const YTDLP_TIMEOUT_MS = 240_000;
 export async function getOkRuVideoInfo(url) {
   const response = await fetch(url, {
     headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'User-Agent': BROWSER_UA,
     },
   });
 
@@ -934,7 +937,7 @@ export async function fetchLibRuText(url, options = {}) {
   const { status, buffer, contentType } = await new Promise((resolve, reject) => {
     httpModule.get(url, {
       insecureHTTPParser: true,
-      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+      headers: { 'User-Agent': BROWSER_UA },
     }, (res) => {
       const chunks = [];
       res.on('data', chunk => chunks.push(chunk));

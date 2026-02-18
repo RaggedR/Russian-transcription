@@ -90,7 +90,21 @@ export function subscribeToProgress(
 ): () => void {
   let eventSource: EventSource | null = null;
   let pollInterval: ReturnType<typeof setInterval> | null = null;
+  let sseTimeoutTimer: ReturnType<typeof setTimeout> | null = null;
   let isClosed = false;
+
+  const SSE_INACTIVITY_TIMEOUT = 60_000; // 60s without any event → fall back to polling
+
+  function resetSseTimeout() {
+    if (sseTimeoutTimer) clearTimeout(sseTimeoutTimer);
+    sseTimeoutTimer = setTimeout(() => {
+      if (isClosed || !eventSource) return;
+      console.log('[API] SSE inactivity timeout, falling back to polling');
+      eventSource.close();
+      eventSource = null;
+      startPolling();
+    }, SSE_INACTIVITY_TIMEOUT);
+  }
 
   const cleanup = () => {
     isClosed = true;
@@ -102,6 +116,10 @@ export function subscribeToProgress(
       clearInterval(pollInterval);
       pollInterval = null;
     }
+    if (sseTimeoutTimer) {
+      clearTimeout(sseTimeoutTimer);
+      sseTimeoutTimer = null;
+    }
   };
 
   // Try SSE first - connect directly to backend to avoid proxy buffering
@@ -112,9 +130,11 @@ export function subscribeToProgress(
       const tokenParam = token ? `?token=${encodeURIComponent(token)}` : '';
       const url = `${SSE_BASE_URL}/api/progress/${sessionId}${tokenParam}`;
       eventSource = new EventSource(url);
+      resetSseTimeout(); // Start inactivity timer
 
       eventSource.onmessage = (event) => {
         if (isClosed) return;
+        resetSseTimeout(); // Reset on every event
 
         try {
           const data: ProgressEvent = JSON.parse(event.data);
@@ -306,5 +326,26 @@ export async function getUsage(): Promise<UsageData> {
 export async function deleteAccount(): Promise<{ success: boolean }> {
   return apiRequest<{ success: boolean }>('/api/account', {
     method: 'DELETE',
+  });
+}
+
+/**
+ * Load a pre-processed demo session (video or text).
+ * Returns the same shape as a cached /api/analyze response.
+ */
+export interface DemoResponse {
+  sessionId: string;
+  status: 'cached';
+  title: string;
+  contentType: 'video' | 'text';
+  totalDuration: number;
+  chunks: VideoChunk[];
+  hasMoreChunks: boolean;
+}
+
+export async function loadDemo(type: 'video' | 'text'): Promise<DemoResponse> {
+  return apiRequest<DemoResponse>('/api/demo', {
+    method: 'POST',
+    body: JSON.stringify({ type }),
   });
 }
