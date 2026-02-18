@@ -1548,6 +1548,15 @@ describe('S. POST /api/demo', () => {
   // Backup storage for real demo files displaced by test writes
   const demoBackups = new Map();
 
+  // Safety net: restore any backed-up demo files even if a test fails mid-way
+  afterAll(() => {
+    const demoDir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'demo');
+    for (const [type, content] of demoBackups) {
+      fs.writeFileSync(path.join(demoDir, `demo-${type}.json`), content);
+    }
+    demoBackups.clear();
+  });
+
   /**
    * Write a minimal demo JSON file for testing.
    * Backs up any existing real demo file so cleanupDemoJson can restore it.

@@ -100,7 +100,10 @@ function isAllowedProxyUrl(urlString) {
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-app.use(helmet());
+app.use(helmet({
+  contentSecurityPolicy: false,      // Vite-built React app uses inline scripts; custom CSP TBD
+  crossOriginEmbedderPolicy: false,  // Firebase SDK + Google Sign-In load from CDN
+}));
 app.use(cors({
   origin: [
     /^https:\/\/russian-transcription.*\.run\.app$/,
@@ -211,6 +214,16 @@ const extractSentenceRateLimit = rateLimit({
   skip: skipInTest,
 });
 
+const demoRateLimit = rateLimit({
+  windowMs: 60 * 1000,
+  max: 10,
+  keyGenerator: (req) => req.uid,
+  message: { error: 'Too many demo requests. Please wait a minute.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: skipInTest,
+});
+
 /**
  * Middleware: verify the requesting user owns the session.
  * Loads the session and attaches it as req.analysisSession / req.sessionId so
@@ -262,12 +275,14 @@ const demoCache = new Map();
  * Returns the parsed demo data or null if the file doesn't exist.
  */
 function loadDemoData(type) {
-  if (demoCache.has(type)) return demoCache.get(type);
-  const filePath = path.join(__dirname, 'demo', `demo-${type}.json`);
-  if (!fs.existsSync(filePath)) return null;
-  const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-  demoCache.set(type, data);
-  return data;
+  if (!demoCache.has(type)) {
+    const filePath = path.join(__dirname, 'demo', `demo-${type}.json`);
+    if (!fs.existsSync(filePath)) return null;
+    const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    demoCache.set(type, data);
+  }
+  // Return a deep copy to prevent mutation of cached data across requests
+  return structuredClone(demoCache.get(type));
 }
 
 /**
@@ -276,7 +291,7 @@ function loadDemoData(type) {
  * No API calls, no rate limits, no budget — just hydrates a session from JSON.
  * Body: { type: 'video' | 'text' }
  */
-app.post('/api/demo', async (req, res) => {
+app.post('/api/demo', demoRateLimit, async (req, res) => {
   const { type } = req.body;
 
   if (!type || (type !== 'video' && type !== 'text')) {
@@ -313,6 +328,8 @@ app.post('/api/demo', async (req, res) => {
           localSessions.set(key, localPath);
           mediaUrl = `/api/local-video/${sessionId}_${chunk.id}.mp4`;
         }
+      } else {
+        console.warn(`[Demo] Missing media file: ${localPath} — run 'node scripts/generate-demo.js' to generate`);
       }
     }
 
@@ -357,7 +374,8 @@ app.post('/api/demo', async (req, res) => {
     session.chunkTexts = new Map(demoData.chunkTexts);
   }
 
-  await setAnalysisSession(sessionId, session);
+  // Demo sessions are in-memory only — no GCS write needed since data comes from pre-baked JSON
+  analysisSessions.set(sessionId, session);
 
   console.log(`[Demo] Created ${type} session ${sessionId} for user ${req.uid}`);
 
