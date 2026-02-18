@@ -1280,6 +1280,12 @@ describe('O. SSRF Protection — isAllowedProxyUrl', () => {
     expect(isAllowedProxyUrl('http://192.168.1.1/secret')).toBe(false);
   });
 
+  it('rejects IPv6-mapped private addresses', () => {
+    expect(isAllowedProxyUrl('http://[::ffff:169.254.169.254]/computeMetadata/v1/')).toBe(false);
+    expect(isAllowedProxyUrl('http://[::1]:3001/api/health')).toBe(false);
+    expect(isAllowedProxyUrl('http://[::ffff:127.0.0.1]/')).toBe(false);
+  });
+
   it('rejects non-CDN public URLs', () => {
     expect(isAllowedProxyUrl('https://evil.com/steal-data')).toBe(false);
     expect(isAllowedProxyUrl('https://google.com')).toBe(false);
@@ -1343,9 +1349,8 @@ describe('P. Concurrency Limit on /api/analyze', () => {
   it('rejects analysis when max concurrent limit reached', async () => {
     // Set up slow mocks that won't complete during the test
     getOkRuVideoInfo.mockResolvedValue({ title: 'Slow Video', duration: 600 });
-    downloadAudioChunk.mockImplementation(() => new Promise((resolve) => {
-      // Never resolves during this test — simulates a long-running download
-      setTimeout(() => resolve({ size: 50000, info: null }), 60000);
+    downloadAudioChunk.mockImplementation(() => new Promise(() => {
+      // Never resolves — simulates a long-running download
     }));
 
     // Start MAX_CONCURRENT_ANALYSES analyses

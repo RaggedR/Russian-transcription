@@ -11,19 +11,8 @@ test.describe('Firestore save error banner', () => {
     // Navigate to player view so the full App is mounted
     await navigateToPlayer(page);
 
-    // The save error banner is driven by React state in useDeck.
-    // Firestore SDK uses WebSocket, which Playwright cannot intercept,
-    // so we inject the error state directly via React internals exposed on __REACT_DEVTOOLS_GLOBAL_HOOK__.
-    // Simpler approach: inject a DOM element that mimics what the banner looks like,
-    // OR use page.evaluate to trigger the error.
-    //
-    // Best approach: since we can't easily trigger Firestore failure from E2E,
-    // verify the banner DOM structure by injecting the data-testid element
-    // and checking it matches the expected pattern.
-    //
-    // Actually, we test the banner rendering by checking it's NOT visible by default
-    // (proving the conditional rendering works), then verifying the dismiss button exists
-    // in the source code structure via the build passing TypeScript checks.
+    // Firestore SDK uses WebSocket (not HTTP), so Playwright can't intercept it to trigger failures.
+    // We verify the banner is absent by default; unit tests cover the error state behavior.
     const banner = page.locator('[data-testid="save-error-banner"]');
     await expect(banner).not.toBeVisible();
 

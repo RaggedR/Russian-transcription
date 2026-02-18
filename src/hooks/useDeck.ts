@@ -23,8 +23,8 @@ function loadLocalDeck(): SRSCard[] {
 function saveLocalBackup(cards: SRSCard[]) {
   try {
     localStorage.setItem(DECK_KEY, JSON.stringify(cards));
-  } catch {
-    // localStorage full or unavailable
+  } catch (err) {
+    Sentry.captureException(err, { tags: { operation: 'deck_local_backup' } });
   }
 }
 

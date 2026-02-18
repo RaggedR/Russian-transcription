@@ -420,6 +420,8 @@ const ALLOWED_PROXY_HOSTNAME_PATTERNS = [
 function isPrivateHostname(hostname) {
   // Block localhost
   if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') return true;
+  // Block all IPv6 addresses (bracketed or raw) — prevents ::ffff:169.254.169.254 bypass
+  if (hostname.startsWith('[') || hostname.includes(':')) return true;
   // Block private IP ranges
   const parts = hostname.split('.').map(Number);
   if (parts.length === 4 && parts.every(p => !isNaN(p))) {
@@ -775,6 +777,11 @@ app.get('/api/hls/:sessionId/playlist.m3u8', requireSessionOwnership, async (req
     return res.status(404).json({ error: 'HLS URL not found for session' });
   }
 
+  // Defense-in-depth: hlsUrl is server-set, but validate anyway
+  if (!isAllowedProxyUrl(session.hlsUrl)) {
+    return res.status(403).json({ error: 'URL not allowed' });
+  }
+
   try {
     const response = await fetch(session.hlsUrl, {
       headers: {
@@ -869,7 +876,7 @@ app.get('/api/hls/:sessionId/segment', requireSessionOwnership, async (req, res)
  * Proxies video content to bypass CORS restrictions
  * Query params: url (required) - the video URL to proxy
  */
-app.get('/api/video-proxy', async (req, res) => {
+app.get('/api/video-proxy', requireAuth, async (req, res) => {
   const { url } = req.query;
 
   if (!url) {
