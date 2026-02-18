@@ -7,7 +7,7 @@ import App from './App.tsx'
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <Sentry.ErrorBoundary fallback={<p>Something went wrong. Please refresh the page.</p>}>
+    <Sentry.ErrorBoundary fallback={<p className="p-8 text-center text-lg">Something went wrong. Please refresh the page.</p>}>
       <App />
     </Sentry.ErrorBoundary>
   </StrictMode>,

@@ -19,6 +19,7 @@ vi.mock('firebase-admin/firestore', () => ({
           return mockSet(data);
         },
       }),
+      where: () => ({ get: mockGet }),
       get: mockGet,
     }),
   }),
@@ -66,6 +67,7 @@ describe('usage.js — Firestore persistence', () => {
     const saved = mockDocs.get(uid);
     expect(saved.openai.daily.cost).toBeCloseTo(0.10);
     expect(saved.openai.daily.date).toBe('2026-03-15');
+    expect(saved.updatedAt).toBeDefined();
   });
 
   it('multiple trackCost calls debounce into a single write', async () => {

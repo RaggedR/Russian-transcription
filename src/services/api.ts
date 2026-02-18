@@ -48,7 +48,7 @@ export async function apiRequest<T>(
     const data = await response.json().catch(() => ({}));
     const error = new Error(data.error || `Request failed: ${response.status}`);
     if (response.status >= 500) {
-      Sentry.captureException(error, { tags: { endpoint, status: response.status } });
+      Sentry.captureException(error, { tags: { endpoint, status: String(response.status) } });
     }
     throw error;
   }

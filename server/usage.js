@@ -74,6 +74,7 @@ function persistUsage(uid) {
           weekly: translateWeeklyCosts.get(uid) || null,
           monthly: translateMonthlyCosts.get(uid) || null,
         },
+        updatedAt: new Date().toISOString(),
       });
     } catch (err) {
       console.error(`[Usage] Persist failed for ${uid}:`, err.message);
@@ -93,7 +94,11 @@ export async function initUsageStore() {
     return;
   }
   try {
-    const snapshot = await firestore.collection('usage').get();
+    // Only load docs updated this month (longest tracked period) to avoid full table scan
+    const monthStart = getMonth() + '-01T00:00:00.000Z';
+    const snapshot = await firestore.collection('usage')
+      .where('updatedAt', '>=', monthStart)
+      .get();
     let loaded = 0;
     const today = getToday();
     const week = getWeek();

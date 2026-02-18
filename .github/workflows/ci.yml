@@ -126,6 +126,7 @@ jobs:
         run: |
           echo "VITE_API_URL=${{ steps.get-url.outputs.backend_url }}" > .env.production
           echo "VITE_SENTRY_DSN=${{ secrets.VITE_SENTRY_DSN }}" >> .env.production
+          echo "VITE_GIT_SHA=${{ github.sha }}" >> .env.production
           npm run build
 
       - name: Prepare server with frontend
@@ -157,7 +158,7 @@ jobs:
             --timeout 300 \
             --max-instances 1 \
             --set-secrets="OPENAI_API_KEY=openai-api-key:latest,GOOGLE_TRANSLATE_API_KEY=google-translate-key:latest,SENTRY_DSN=sentry-dsn:latest" \
-            --set-env-vars="GCS_BUCKET=russian-transcription-videos"
+            --set-env-vars="GCS_BUCKET=russian-transcription-videos,GIT_SHA=${{ github.sha }}"
 
       - name: Verify deployment
         run: |
