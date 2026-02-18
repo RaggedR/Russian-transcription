@@ -100,12 +100,9 @@ function isAllowedProxyUrl(urlString) {
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-app.use(helmet({
-  contentSecurityPolicy: false,       // Vite-built React app uses inline scripts; custom CSP TBD
-  crossOriginEmbedderPolicy: false,   // Firebase SDK + Google Sign-In load from CDN
-  crossOriginOpenerPolicy: false,     // Google Sign-In uses signInWithPopup (cross-origin window.open)
-  crossOriginResourcePolicy: false,   // Firebase JS SDK loaded from cross-origin CDN
-}));
+// helmet disabled — multiple headers (COOP, CORP, CSP) break Firebase Google Sign-In
+// TODO: re-enable with a carefully tested config
+// app.use(helmet({ ... }));
 app.use(cors({
   origin: [
     /^https:\/\/russian-transcription.*\.run\.app$/,
