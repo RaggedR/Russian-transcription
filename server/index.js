@@ -405,6 +405,51 @@ async function rebuildUrlCache() {
   }
 }
 
+/**
+ * SSRF protection: validate that a URL is safe to proxy.
+ * Only allows HTTPS/HTTP to known video CDN hostnames; blocks private/internal IPs.
+ */
+const ALLOWED_PROXY_HOSTNAME_PATTERNS = [
+  /\.mycdn\.me$/,       // ok.ru video CDN (vod*.mycdn.me)
+  /\.userapi\.com$/,    // VK/ok.ru CDN
+  /\.okcdn\.ru$/,       // ok.ru CDN variant
+  /\.ok\.ru$/,          // ok.ru direct
+  /^ok\.ru$/,           // ok.ru bare domain
+];
+
+function isPrivateHostname(hostname) {
+  // Block localhost
+  if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') return true;
+  // Block all IPv6 addresses (bracketed or raw) — prevents ::ffff:169.254.169.254 bypass
+  if (hostname.startsWith('[') || hostname.includes(':')) return true;
+  // Block private IP ranges
+  const parts = hostname.split('.').map(Number);
+  if (parts.length === 4 && parts.every(p => !isNaN(p))) {
+    if (parts[0] === 10) return true;                                          // 10.0.0.0/8
+    if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true;     // 172.16.0.0/12
+    if (parts[0] === 192 && parts[1] === 168) return true;                     // 192.168.0.0/16
+    if (parts[0] === 169 && parts[1] === 254) return true;                     // 169.254.0.0/16 (link-local / GCP metadata)
+    if (parts[0] === 127) return true;                                          // 127.0.0.0/8
+    if (parts[0] === 0) return true;                                            // 0.0.0.0/8
+  }
+  return false;
+}
+
+function isAllowedProxyUrl(urlString) {
+  let parsed;
+  try {
+    parsed = new URL(urlString);
+  } catch {
+    return false;
+  }
+  // Only HTTP(S)
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+  // Block private/internal hostnames
+  if (isPrivateHostname(parsed.hostname)) return false;
+  // Must match an allowed CDN pattern
+  return ALLOWED_PROXY_HOSTNAME_PATTERNS.some(pattern => pattern.test(parsed.hostname));
+}
+
 const app = express();
 const PORT = process.env.PORT || 3001;
 
@@ -732,6 +777,11 @@ app.get('/api/hls/:sessionId/playlist.m3u8', requireSessionOwnership, async (req
     return res.status(404).json({ error: 'HLS URL not found for session' });
   }
 
+  // Defense-in-depth: hlsUrl is server-set, but validate anyway
+  if (!isAllowedProxyUrl(session.hlsUrl)) {
+    return res.status(403).json({ error: 'URL not allowed' });
+  }
+
   try {
     const response = await fetch(session.hlsUrl, {
       headers: {
@@ -782,6 +832,10 @@ app.get('/api/hls/:sessionId/segment', requireSessionOwnership, async (req, res)
     return res.status(400).json({ error: 'URL required' });
   }
 
+  if (!isAllowedProxyUrl(url)) {
+    return res.status(403).json({ error: 'URL not allowed' });
+  }
+
   try {
     const response = await fetch(url, {
       headers: {
@@ -822,11 +876,15 @@ app.get('/api/hls/:sessionId/segment', requireSessionOwnership, async (req, res)
  * Proxies video content to bypass CORS restrictions
  * Query params: url (required) - the video URL to proxy
  */
-app.get('/api/video-proxy', async (req, res) => {
+app.get('/api/video-proxy', requireAuth, async (req, res) => {
   const { url } = req.query;
 
   if (!url) {
     return res.status(400).json({ error: 'URL is required' });
+  }
+
+  if (!isAllowedProxyUrl(url)) {
+    return res.status(403).json({ error: 'URL not allowed' });
   }
 
   try {
@@ -904,6 +962,10 @@ app.get('/api/video-proxy', async (req, res) => {
   }
 });
 
+// Concurrency limit for analysis jobs (prevents OOM on single Cloud Run instance)
+const MAX_CONCURRENT_ANALYSES = 2;
+let activeAnalyses = 0;
+
 // Batch settings for audio downloads
 const DOWNLOAD_BUFFER = 20 * 60;  // Download 20 min of audio (5 chunks × 3 min = 15 min + 5 min buffer)
 const CHUNKS_PER_BATCH = 5;       // Show 5 chunks at a time (~15 min)
@@ -951,6 +1013,11 @@ app.post('/api/analyze', analyzeRateLimit, analyzeDailyLimit, requireBudget, asy
     });
   }
 
+  // Concurrency guard: reject if too many analyses are running
+  if (activeAnalyses >= MAX_CONCURRENT_ANALYSES) {
+    return res.status(503).json({ error: 'Server is busy processing other videos. Please try again in a few minutes.' });
+  }
+
   const sessionId = crypto.randomUUID();
   const tempDir = path.join(__dirname, 'temp');
   if (!fs.existsSync(tempDir)) {
@@ -973,6 +1040,7 @@ app.post('/api/analyze', analyzeRateLimit, analyzeDailyLimit, requireBudget, asy
 
   // Process in background - small delay to allow SSE connection
   setTimeout(async () => {
+    activeAnalyses++;
     try {
       console.log(`[Analyze] Session ${sessionId}: Starting analysis`);
 
@@ -1178,6 +1246,8 @@ app.post('/api/analyze', analyzeRateLimit, analyzeDailyLimit, requireBudget, asy
       });
 
       sendProgress(sessionId, 'error', 0, 'error', error.message);
+    } finally {
+      activeAnalyses--;
     }
   }, 500); // 500ms delay to allow SSE connection
 });
@@ -1937,11 +2007,15 @@ if (fs.existsSync(distPath)) {
 }
 
 // Export for tests
-export { app, analysisSessions, localSessions, progressClients, translationCache, urlSessionCache };
+export { app, analysisSessions, localSessions, progressClients, translationCache, urlSessionCache, isAllowedProxyUrl, MAX_CONCURRENT_ANALYSES };
+
+// Test helper: get/reset active analysis count
+export function getActiveAnalyses() { return activeAnalyses; }
+export function resetActiveAnalyses() { activeAnalyses = 0; }
 
 // Only start listening when run directly (not when imported by tests)
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
-  app.listen(PORT, () => {
+  const server = app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
     console.log(`OpenAI API key: ${process.env.OPENAI_API_KEY ? 'loaded from .env' : 'not set'}`);
     console.log(`Google API key: ${process.env.GOOGLE_TRANSLATE_API_KEY ? 'loaded from .env' : 'not set'}`);
@@ -1953,6 +2027,24 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
       .catch(err => {
         console.error('[Startup] Cleanup/cache/usage rebuild failed:', err.message);
       });
+  });
+
+  // Crash handler: log, report to Sentry, then exit so Cloud Run restarts us
+  process.on('unhandledRejection', (reason) => {
+    console.error('[FATAL] Unhandled rejection:', reason);
+    Sentry.captureException(reason);
+    Sentry.close(2000).then(() => process.exit(1));
+  });
+
+  // Graceful shutdown: Cloud Run sends SIGTERM before killing the container
+  process.on('SIGTERM', () => {
+    console.log('[Shutdown] SIGTERM received, closing server...');
+    server.close(() => {
+      console.log('[Shutdown] Server closed');
+      process.exit(0);
+    });
+    // Force exit after 10s if connections don't drain
+    setTimeout(() => process.exit(0), 10_000);
   });
 }
 

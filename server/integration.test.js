@@ -104,6 +104,10 @@ import {
   progressClients,
   translationCache,
   urlSessionCache,
+  isAllowedProxyUrl,
+  MAX_CONCURRENT_ANALYSES,
+  getActiveAnalyses,
+  resetActiveAnalyses,
 } from './index.js';
 
 // ---------------------------------------------------------------------------
@@ -311,6 +315,9 @@ beforeEach(() => {
     clients.forEach(c => { try { c.end(); } catch {} });
   }
   progressClients.clear();
+
+  // Reset concurrency counter
+  resetActiveAnalyses();
 
   // Ensure OPENAI_API_KEY is set for tests that need it
   process.env.OPENAI_API_KEY = 'test-key';
@@ -1242,5 +1249,193 @@ describe('N. Session Ownership & Security', () => {
     // Simulate a different user's cache entry for the same URL (should not collide)
     const otherCacheKey = cacheKey.replace('test-user:', 'other-user:');
     expect(urlSessionCache.has(otherCacheKey)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// O. SSRF Protection — isAllowedProxyUrl
+// ---------------------------------------------------------------------------
+
+describe('O. SSRF Protection — isAllowedProxyUrl', () => {
+  it('rejects GCP metadata endpoint', () => {
+    expect(isAllowedProxyUrl('http://169.254.169.254/computeMetadata/v1/')).toBe(false);
+  });
+
+  it('rejects localhost loopback', () => {
+    expect(isAllowedProxyUrl('http://localhost:3001/api/health')).toBe(false);
+    expect(isAllowedProxyUrl('http://127.0.0.1:3001/api/health')).toBe(false);
+  });
+
+  it('rejects file:// protocol', () => {
+    expect(isAllowedProxyUrl('file:///etc/passwd')).toBe(false);
+  });
+
+  it('rejects ftp:// protocol', () => {
+    expect(isAllowedProxyUrl('ftp://evil.com/file')).toBe(false);
+  });
+
+  it('rejects private IP ranges', () => {
+    expect(isAllowedProxyUrl('http://10.0.0.1/secret')).toBe(false);
+    expect(isAllowedProxyUrl('http://172.16.0.1/secret')).toBe(false);
+    expect(isAllowedProxyUrl('http://192.168.1.1/secret')).toBe(false);
+  });
+
+  it('rejects IPv6-mapped private addresses', () => {
+    expect(isAllowedProxyUrl('http://[::ffff:169.254.169.254]/computeMetadata/v1/')).toBe(false);
+    expect(isAllowedProxyUrl('http://[::1]:3001/api/health')).toBe(false);
+    expect(isAllowedProxyUrl('http://[::ffff:127.0.0.1]/')).toBe(false);
+  });
+
+  it('rejects non-CDN public URLs', () => {
+    expect(isAllowedProxyUrl('https://evil.com/steal-data')).toBe(false);
+    expect(isAllowedProxyUrl('https://google.com')).toBe(false);
+  });
+
+  it('allows ok.ru CDN URLs (mycdn.me)', () => {
+    expect(isAllowedProxyUrl('https://vod.mycdn.me/vid/abc123.mp4')).toBe(true);
+    expect(isAllowedProxyUrl('https://vod73.mycdn.me/content/stream.ts')).toBe(true);
+  });
+
+  it('allows ok.ru CDN URLs (userapi.com)', () => {
+    expect(isAllowedProxyUrl('https://cdn1.userapi.com/video/123.mp4')).toBe(true);
+  });
+
+  it('allows okcdn.ru domain', () => {
+    expect(isAllowedProxyUrl('https://st.okcdn.ru/video.mp4')).toBe(true);
+  });
+
+  it('allows ok.ru direct', () => {
+    expect(isAllowedProxyUrl('https://ok.ru/video/123')).toBe(true);
+  });
+
+  it('rejects invalid URL strings', () => {
+    expect(isAllowedProxyUrl('not-a-url')).toBe(false);
+    expect(isAllowedProxyUrl('')).toBe(false);
+  });
+
+  it('video-proxy endpoint rejects internal URLs', async () => {
+    const res = await fetch(`${baseUrl}/api/video-proxy?url=${encodeURIComponent('http://169.254.169.254/computeMetadata/v1/')}`);
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.error).toBe('URL not allowed');
+  });
+
+  it('video-proxy endpoint rejects localhost', async () => {
+    const res = await fetch(`${baseUrl}/api/video-proxy?url=${encodeURIComponent('http://localhost:3001/api/health')}`);
+    expect(res.status).toBe(403);
+  });
+
+  it('HLS segment endpoint rejects internal URLs', async () => {
+    // Need a valid session for the ownership middleware
+    analysisSessions.set('hls-ssrf-test', {
+      status: 'ready',
+      uid: 'test-user',
+      hlsUrl: 'https://vod.mycdn.me/master.m3u8',
+      chunks: [],
+    });
+
+    const res = await fetch(`${baseUrl}/api/hls/hls-ssrf-test/segment?url=${encodeURIComponent('http://169.254.169.254/latest/meta-data/')}`);
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.error).toBe('URL not allowed');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P. Concurrency Limit on /api/analyze
+// ---------------------------------------------------------------------------
+
+describe('P. Concurrency Limit on /api/analyze', () => {
+  it('rejects analysis when max concurrent limit reached', async () => {
+    // Set up slow mocks that won't complete during the test
+    getOkRuVideoInfo.mockResolvedValue({ title: 'Slow Video', duration: 600 });
+    downloadAudioChunk.mockImplementation(() => new Promise(() => {
+      // Never resolves — simulates a long-running download
+    }));
+
+    // Start MAX_CONCURRENT_ANALYSES analyses
+    const urls = [];
+    for (let i = 0; i < MAX_CONCURRENT_ANALYSES; i++) {
+      const url = `https://ok.ru/video/concurrent-${i}-${Date.now()}`;
+      urls.push(url);
+      const res = await fetch(`${baseUrl}/api/analyze`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url }),
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.status).toBe('started');
+    }
+
+    // Wait for the background setTimeout(500ms) to fire and increment counters
+    await new Promise(r => setTimeout(r, 700));
+
+    // Next analysis should be rejected with 503
+    const res = await fetch(`${baseUrl}/api/analyze`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: 'https://ok.ru/video/one-too-many-' + Date.now() }),
+    });
+    expect(res.status).toBe(503);
+    const body = await res.json();
+    expect(body.error).toMatch(/busy/i);
+  });
+
+  it('counter decrements after analysis completes', async () => {
+    setupHappyPathMocks();
+
+    // Run a full analysis
+    await analyzeAndWait('https://ok.ru/video/decrement-test-' + Date.now());
+
+    // Counter should be back to 0
+    expect(getActiveAnalyses()).toBe(0);
+  });
+
+  it('counter decrements after analysis fails', async () => {
+    getOkRuVideoInfo.mockResolvedValue({ title: 'Fail Video', duration: 600 });
+    downloadAudioChunk.mockRejectedValue(new Error('download failed'));
+
+    const analyzeRes = await fetch(`${baseUrl}/api/analyze`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: 'https://ok.ru/video/fail-decrement-' + Date.now() }),
+    });
+    expect(analyzeRes.status).toBe(200);
+
+    // Wait for background processing to start and fail
+    const sse = createSSEClient(`${baseUrl}/api/progress/${(await analyzeRes.clone().json()).sessionId}`);
+    try {
+      await sse.waitForEvent('error', 5000);
+    } finally {
+      sse.close();
+    }
+
+    // Counter should be back to 0 after failure
+    // Small delay for the finally block to execute
+    await new Promise(r => setTimeout(r, 100));
+    expect(getActiveAnalyses()).toBe(0);
+  });
+
+  it('cached responses bypass concurrency limit', async () => {
+    setupHappyPathMocks();
+
+    const url = 'https://ok.ru/video/cached-bypass-' + Date.now();
+
+    // First: complete an analysis to cache it
+    await analyzeAndWait(url);
+
+    // Now requesting the same URL should return cached without hitting concurrency
+    // even if we artificially max out the counter
+    resetActiveAnalyses();
+
+    const res = await fetch(`${baseUrl}/api/analyze`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.status).toBe('cached');
   });
 });
