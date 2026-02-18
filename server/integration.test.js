@@ -1545,13 +1545,23 @@ describe('R. DELETE /api/account', () => {
 // ---------------------------------------------------------------------------
 
 describe('S. POST /api/demo', () => {
+  // Backup storage for real demo files displaced by test writes
+  const demoBackups = new Map();
+
   /**
    * Write a minimal demo JSON file for testing.
-   * Returns the path so we can clean up.
+   * Backs up any existing real demo file so cleanupDemoJson can restore it.
    */
   function writeDemoJson(type) {
     const demoDir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'demo');
     if (!fs.existsSync(demoDir)) fs.mkdirSync(demoDir, { recursive: true });
+
+    const filePath = path.join(demoDir, `demo-${type}.json`);
+
+    // Backup existing real file before overwriting
+    if (fs.existsSync(filePath) && !demoBackups.has(type)) {
+      demoBackups.set(type, fs.readFileSync(filePath));
+    }
 
     const isText = type === 'text';
     const data = {
@@ -1592,14 +1602,19 @@ describe('S. POST /api/demo', () => {
       data.chunkTexts = [['chunk-0', 'Привет, как дела?']];
     }
 
-    const filePath = path.join(demoDir, `demo-${type}.json`);
     fs.writeFileSync(filePath, JSON.stringify(data));
     return filePath;
   }
 
   function cleanupDemoJson(type) {
     const filePath = path.join(path.dirname(fileURLToPath(import.meta.url)), 'demo', `demo-${type}.json`);
-    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    if (demoBackups.has(type)) {
+      // Restore the original real file
+      fs.writeFileSync(filePath, demoBackups.get(type));
+      demoBackups.delete(type);
+    } else if (fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+    }
   }
 
   it('returns 400 for missing type', async () => {
@@ -1623,14 +1638,24 @@ describe('S. POST /api/demo', () => {
   });
 
   it('returns 404 when demo JSON does not exist', async () => {
-    const res = await fetch(`${baseUrl}/api/demo`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ type: 'video' }),
-    });
-    expect(res.status).toBe(404);
-    const body = await res.json();
-    expect(body.error).toMatch(/not available/i);
+    // Temporarily rename the real demo file if it exists, so the endpoint can't find it
+    const demoDir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'demo');
+    const realFile = path.join(demoDir, 'demo-video.json');
+    const backupFile = path.join(demoDir, 'demo-video.json.bak');
+    const hadRealFile = fs.existsSync(realFile);
+    if (hadRealFile) fs.renameSync(realFile, backupFile);
+    try {
+      const res = await fetch(`${baseUrl}/api/demo`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'video' }),
+      });
+      expect(res.status).toBe(404);
+      const body = await res.json();
+      expect(body.error).toMatch(/not available/i);
+    } finally {
+      if (hadRealFile) fs.renameSync(backupFile, realFile);
+    }
   });
 
   it('video demo creates a session owned by the requesting user', async () => {

@@ -42,6 +42,14 @@ cd server && npm run test:integration
 ```
 
 ```bash
+# Regenerate demo content (requires OPENAI_API_KEY, network access)
+cd server && node scripts/generate-demo.js              # Both video + text
+cd server && node scripts/generate-demo.js --video      # Video only
+cd server && node scripts/generate-demo.js --text       # Text only
+cd server && node scripts/generate-demo.js --upload-gcs # Also upload media to GCS
+```
+
+```bash
 # E2E tests (Playwright — frontend only, all APIs mocked)
 npm run test:e2e            # Run all E2E tests (headless)
 npm run test:e2e:headed     # Run with visible browser
@@ -56,7 +64,7 @@ cd e2e && npx playwright install chromium
 - `server/media.test.js` — Unit tests for heartbeat, stripPunctuation, editDistance, isFuzzyMatch
 - `server/usage.test.js` — Unit tests for cost tracking, budget middleware, limit constants
 - `server/integration.test.js` — Mocks `media.js`, tests all Express endpoints, SSE, session lifecycle
-- `e2e/tests/*.spec.ts` — Playwright E2E tests: app loading, video flow, word popup, flashcard review, add-to-deck, settings features, edge cases
+- `e2e/tests/*.spec.ts` — Playwright E2E tests: app loading, video flow, text flow, demo flow, word popup, flashcard review, add-to-deck, settings features, edge cases
 
 ## Setup
 
@@ -107,6 +115,7 @@ SSE for progress updates has a special setup to avoid Vite proxy buffering in de
 - `api.ts` connects SSE directly to `http://localhost:3001` (not through Vite proxy)
 - `vite.config.ts` disables caching on `/progress/` proxy requests as a fallback
 - In production, SSE connects to the same origin (frontend served from Cloud Run)
+- Frontend has a 60s inactivity timeout: if no SSE events are received, it closes the `EventSource` and falls back to 2-second polling via `GET /api/session/:sessionId`
 
 ### Session Persistence
 
@@ -119,7 +128,9 @@ SSE for progress updates has a special setup to avoid Vite proxy buffering in de
 ### Backend (`server/`)
 
 Express.js on port 3001 (local) / `PORT` env var (Cloud Run). Key files:
-- `index.js` — Routing, session management, SSE, chunk prefetching, ownership middleware
+- `index.js` — Routing, analysis pipeline orchestration, chunk prefetching, demo endpoint, ownership middleware
+- `session-store.js` — Session CRUD, LRU cache (50 sessions), URL session cache (6h TTL per-user), GCS persistence, signed URL generation, extraction cache (2h TTL)
+- `progress.js` — SSE client management (`progressClients` Map), `sendProgress()`/`createProgressCallback()` helpers, terminal progress rendering
 - `media.js` — External tool integration (yt-dlp, Whisper, GPT-4o, Google Translate, TTS)
 - `chunking.js` — Splits transcripts at natural pauses (>0.5s gaps), targets ~3min chunks
 - `auth.js` — Firebase Admin SDK token verification middleware (`requireAuth`)
@@ -127,14 +138,20 @@ Express.js on port 3001 (local) / `PORT` env var (Cloud Run). Key files:
 
 **Authentication & Authorization:**
 - `requireAuth` middleware on all `/api/*` routes (except `/api/health`) — verifies Firebase ID tokens from `Authorization: Bearer` header or `?token=` query param (needed for SSE/EventSource). Sets `req.uid` and `req.userEmail`.
-- `requireSessionOwnership` middleware on all session endpoints — verifies `session.uid === req.uid`. Returns 403 for mismatched or missing uid. Attaches `req.session` and `req.sessionId` so handlers skip redundant lookups.
+- `requireSessionOwnership` middleware on all session endpoints — verifies `session.uid === req.uid`. Returns 403 for mismatched or missing uid. Attaches `req.analysisSession` and `req.sessionId` so handlers skip redundant lookups.
 - Session IDs are `crypto.randomUUID()` (122 bits of entropy, not guessable).
 
 **Rate Limiting & Budget:**
 - Per-user rate limiters keyed on `req.uid` (disabled during tests via `process.env.VITEST`)
 - OpenAI budget: $1/day, $5/week, $10/month per user (`requireBudget` middleware)
 - Google Translate budget: $0.50/day, $2.50/week, $5/month (`requireTranslateBudget`)
-- Costs tracked in-memory (resets on restart); see `server/usage.js` for per-call estimates
+- Costs tracked in-memory with Firestore write-behind persistence (5s debounce per user). `flushAllUsage()` writes all pending data on graceful shutdown (SIGTERM/SIGINT). `initUsageStore()` hydrates from Firestore on startup. See `server/usage.js` for per-call estimates.
+
+**Security & Production Hardening:**
+- `helmet()` middleware adds security headers (CSP, X-Frame-Options, HSTS, X-Content-Type-Options)
+- `/api/health` checks Firestore + GCS connectivity in production (returns 503 `degraded` if either fails)
+- Graceful shutdown on SIGTERM/SIGINT: flushes usage data to Firestore, drains connections, force-exits after 10s
+- SSE inactivity timeout (60s) on the frontend: if no events received, `EventSource` closes and falls back to polling
 
 **Input Validation & CORS:**
 - CORS whitelist: Cloud Run origin pattern, `localhost:5173`, `localhost:3001` (not open `cors()`)
@@ -163,13 +180,16 @@ Express.js on port 3001 (local) / `PORT` env var (Cloud Run). Key files:
 | GET | `/api/progress/:sessionId` | auth + owner | SSE stream for progress events |
 | GET | `/api/usage` | auth | Per-user API cost consumption (OpenAI + Translate) |
 | DELETE | `/api/account` | auth | Delete account: Firestore + GCS + in-memory + Auth cleanup |
+| POST | `/api/demo` | auth | Load pre-processed demo (no budget — no API calls) |
+| GET | `/api/local-video/:filename` | auth | Serve local demo video files (dev only) |
+| GET | `/api/local-audio/:filename` | auth | Serve local demo audio files (dev only) |
 | GET | `/api/hls/:sessionId/playlist.m3u8` | auth + owner | Proxy and rewrite HLS manifest |
 | GET | `/api/hls/:sessionId/segment` | auth + owner | Proxy HLS segments |
 
 ### Frontend
 
 - `App.tsx` — State machine managing view transitions, SSE subscriptions. Two content modes: `video` (ok.ru) and `text` (lib.ru)
-- `src/services/api.ts` — API client with SSE + polling fallback. Exports `getUsage()`, `deleteAccount()`.
+- `src/services/api.ts` — API client with SSE + polling fallback. Exports `getUsage()`, `deleteAccount()`, `loadDemo()`.
 - `src/types/index.ts` — Shared types: `WordTimestamp`, `Transcript`, `VideoChunk`, `SessionResponse`, `ProgressState`, `SRSCard`
 - `src/legal.ts` — `TERMS_OF_SERVICE` and `PRIVACY_POLICY` string constants, used in both `SettingsPanel` and `LoginScreen`
 - `src/components/SettingsPanel.tsx` — Accepts `cards`, `userId`, `onDeleteAccount` props. Features: frequency range config, deck export (JSON Blob download), usage bars (color-coded: green/yellow/red), collapsible legal docs, account deletion with "DELETE" confirmation.
@@ -190,6 +210,18 @@ Express.js on port 3001 (local) / `PORT` env var (Cloud Run). Key files:
 - `public/russian-word-frequencies.json` — 92K Russian words sorted by frequency rank
 - `TranscriptPanel` underlines words in a configurable frequency rank range (e.g., rank 500–1000)
 - Normalization: ё→е for both frequency lookup and card deduplication (`normalizeCardId` in `sm2.ts`)
+
+### Demo System
+
+Pre-processed demo content lets first-time users instantly experience the app without waiting for transcription.
+
+- **`server/scripts/generate-demo.js`** — One-time script: processes demo URLs through the full pipeline (transcribe, punctuate, lemmatize, TTS), saves JSON to `server/demo/`, media to `server/demo/media/`, optionally uploads to GCS (`--upload-gcs`). Run with `cd server && node scripts/generate-demo.js [--video] [--text] [--upload-gcs]`.
+- **`server/demo/demo-video.json`** / **`demo-text.json`** — Pre-baked session data (checked into git). Contains chunks, transcripts, and GCS/local media file references.
+- **`server/demo/media/`** — Generated media files (gitignored, ~20MB). Served locally via `/api/local-video/` and `/api/local-audio/`.
+- **`POST /api/demo`** — Creates a real session from pre-baked data. No API calls, no budget cost. `demoCache` Map caches parsed JSON in memory. Returns same shape as a cached `/api/analyze` response, so existing frontend handling takes over.
+- **Demo URLs** (hardcoded in generate script): video = `ok.ru/video/400776431053` (Chekhov audiobook), text = `az.lib.ru` (Anna Karenina). Max 3 chunks, max 10 min audio.
+- **Frontend**: "or try a demo" divider + two buttons (`data-testid="demo-video-btn"`, `data-testid="demo-text-btn"`) below the URL input grid. `handleLoadDemo()` in App.tsx follows the same cached-response pattern as analyze handlers.
+- **GCS**: Demo media lives under `demo/` prefix, excluded from 7-day lifecycle auto-deletion via `matchesPrefix` in `deploy.sh`.
 
 ### Error Monitoring (Sentry)
 
@@ -245,6 +277,7 @@ GCP project: `russian-transcription`, Cloud Run service: `russian-transcription`
 - ~~Sentry error monitoring~~ (PR #16)
 - ~~Production hardening: SSRF, CORS, input validation, concurrency limits~~ (PR #18)
 - ~~Legal docs, usage UI, deck export, account deletion, GCP monitoring~~ (PR #19)
+- ~~Pre-processed demo content, helmet.js, health check, graceful shutdown, SSE timeout~~ (PR #20)
 
 ### Payment (Priority: HIGH — Next)
 - Add Stripe subscription: $10/month, first month free
