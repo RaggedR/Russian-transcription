@@ -10,12 +10,22 @@ import dotenv from 'dotenv';
 import { Storage } from '@google-cloud/storage';
 import { spawn } from 'child_process';
 import rateLimit from 'express-rate-limit';
+import helmet from 'helmet';
 import * as Sentry from '@sentry/node';
-import { LRUCache } from 'lru-cache';
 import { createChunks, createTextChunks, getChunkTranscript, formatTime } from './chunking.js';
-import { downloadAudioChunk, downloadVideoChunk, transcribeAudioChunk, addPunctuation, lemmatizeWords, getOkRuVideoInfo, isLibRuUrl, fetchLibRuText, generateTtsAudio, getAudioDuration, estimateWordTimestamps } from './media.js';
+import {
+  localSessions, analysisSessions, urlSessionCache, translationCache,
+  getSignedMediaUrl, getCachedExtraction, cacheExtraction,
+  getCachedSession, cacheSessionUrl,
+  getAnalysisSession, setAnalysisSession,
+  deleteSessionAndVideos,
+  cleanupOldSessions, rebuildUrlCache,
+  init as initSessionStore,
+} from './session-store.js';
+import { progressClients, sendProgress, createProgressCallback, friendlyErrorMessage } from './progress.js';
+import { downloadAudioChunk, downloadVideoChunk, transcribeAudioChunk, addPunctuation, lemmatizeWords, getOkRuVideoInfo, isLibRuUrl, fetchLibRuText, generateTtsAudio, getAudioDuration, estimateWordTimestamps, BROWSER_UA } from './media.js';
 import { requireAuth, adminAuth } from './auth.js';
-import { trackCost, requireBudget, costs, trackTranslateCost, requireTranslateBudget, initUsageStore, getUserCost, getUserWeeklyCost, getUserMonthlyCost, getTranslateDailyCost, getTranslateWeeklyCost, getTranslateMonthlyCost, DAILY_LIMIT, WEEKLY_LIMIT, MONTHLY_LIMIT, TRANSLATE_DAILY_LIMIT, TRANSLATE_WEEKLY_LIMIT, TRANSLATE_MONTHLY_LIMIT } from './usage.js';
+import { trackCost, requireBudget, costs, trackTranslateCost, requireTranslateBudget, initUsageStore, flushAllUsage, getUserCost, getUserWeeklyCost, getUserMonthlyCost, getTranslateDailyCost, getTranslateWeeklyCost, getTranslateMonthlyCost, DAILY_LIMIT, WEEKLY_LIMIT, MONTHLY_LIMIT, TRANSLATE_DAILY_LIMIT, TRANSLATE_WEEKLY_LIMIT, TRANSLATE_MONTHLY_LIMIT } from './usage.js';
 
 // Use system yt-dlp binary instead of bundled one (bundled version may be outdated)
 const ytdlp = ytdlpBase.create('yt-dlp');
@@ -39,384 +49,8 @@ if (!IS_LOCAL) {
   console.log('[Storage] Using in-memory storage (local mode)');
 }
 
-/**
- * Generate a signed URL for a GCS file (24h expiry).
- * Requires the service account to have roles/iam.serviceAccountTokenCreator.
- */
-async function getSignedMediaUrl(gcsFileName) {
-  const [signedUrl] = await bucket.file(gcsFileName).getSignedUrl({
-    action: 'read',
-    expires: Date.now() + 24 * 60 * 60 * 1000, // 24 hours
-  });
-  return signedUrl;
-}
-
-// In-memory session storage for local development
-const localSessions = new Map();
-
-// SSE clients for progress updates
-const progressClients = new Map();
-
-// Analysis sessions (for chunking workflow) — LRU-bounded to prevent memory leaks
-const analysisSessions = new LRUCache({ max: 50 });
-
-// URL to session ID cache (for reusing existing analysis)
-// Maps normalized URL -> { sessionId, timestamp }
-const urlSessionCache = new Map();
-const URL_CACHE_TTL = 6 * 60 * 60 * 1000; // 6 hours
-
-// Extraction cache TTL (stream URLs expire after ~2-4 hours on ok.ru)
-const EXTRACTION_CACHE_TTL = 2 * 60 * 60 * 1000; // 2 hours
-
-/**
- * Get cached yt-dlp extraction info from GCS
- * Returns the info.json content if cached and not expired
- */
-async function getCachedExtraction(url) {
-  const videoId = extractVideoId(url);
-  if (!videoId || IS_LOCAL) return null;
-
-  try {
-    const file = bucket.file(`cache/extraction_${videoId}.json`);
-    const [exists] = await file.exists();
-    if (!exists) return null;
-
-    const [metadata] = await file.getMetadata();
-    const created = new Date(metadata.timeCreated);
-    if (Date.now() - created.getTime() > EXTRACTION_CACHE_TTL) {
-      // Expired, delete it
-      await file.delete().catch(() => {});
-      return null;
-    }
-
-    const [contents] = await file.download();
-    console.log(`[Cache] Using cached extraction for ${videoId}`);
-    return JSON.parse(contents.toString());
-  } catch (err) {
-    console.log(`[Cache] Extraction cache miss for ${videoId}:`, err.message);
-    return null;
-  }
-}
-
-/**
- * Save yt-dlp extraction info to GCS cache (minimal version)
- */
-async function cacheExtraction(url, infoJson) {
-  const videoId = extractVideoId(url);
-  if (!videoId || IS_LOCAL || !infoJson) return;
-
-  try {
-    // Only cache essential fields that yt-dlp needs for --load-info-json
-    const minimalInfo = {
-      id: infoJson.id,
-      title: infoJson.title,
-      duration: infoJson.duration,
-      extractor: infoJson.extractor,
-      extractor_key: infoJson.extractor_key,
-      webpage_url: infoJson.webpage_url,
-      original_url: infoJson.original_url,
-      formats: infoJson.formats,  // Required for stream selection
-      requested_formats: infoJson.requested_formats,
-      // Skip: thumbnails, description, comments, subtitles, etc.
-    };
-
-    const file = bucket.file(`cache/extraction_${videoId}.json`);
-    await file.save(JSON.stringify(minimalInfo), {
-      contentType: 'application/json',
-      metadata: { cacheControl: 'no-cache' },
-    });
-
-    const originalSize = JSON.stringify(infoJson).length;
-    const minimalSize = JSON.stringify(minimalInfo).length;
-    console.log(`[Cache] Saved extraction cache for ${videoId} (${Math.round(minimalSize/1024)}KB, was ${Math.round(originalSize/1024)}KB)`);
-  } catch (err) {
-    console.error(`[Cache] Failed to cache extraction:`, err.message);
-  }
-}
-
-/**
- * Extract video ID from URL
- */
-function extractVideoId(url) {
-  try {
-    const u = new URL(url);
-    if (u.hostname.includes('ok.ru')) {
-      const match = u.pathname.match(/\/video\/(\d+)/);
-      if (match) return match[1];
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Normalize URL for cache lookup (strip tracking params, etc.)
- */
-function normalizeUrl(url) {
-  const videoId = extractVideoId(url);
-  if (videoId) return `ok.ru/video/${videoId}`;
-  try {
-    const u = new URL(url);
-    // For lib.ru, normalize to hostname + path
-    return u.hostname + u.pathname;
-  } catch {
-    return url;
-  }
-}
-
-/**
- * Check if we have a cached session for this URL and user
- */
-async function getCachedSession(url, uid) {
-  const normalizedUrl = normalizeUrl(url);
-  const cacheKey = `${uid}:${normalizedUrl}`;
-  const cached = urlSessionCache.get(cacheKey);
-
-  if (!cached) return null;
-
-  // Check if cache entry is expired
-  if (Date.now() - cached.timestamp > URL_CACHE_TTL) {
-    urlSessionCache.delete(cacheKey);
-    return null;
-  }
-
-  // Verify session still exists
-  const session = await getAnalysisSession(cached.sessionId);
-  if (!session || session.status !== 'ready') {
-    urlSessionCache.delete(cacheKey);
-    return null;
-  }
-
-  console.log(`[Cache] Found cached session ${cached.sessionId} for ${cacheKey}`);
-  return { sessionId: cached.sessionId, session };
-}
-
-/**
- * Cache a session for a URL + user combination
- */
-function cacheSessionUrl(url, sessionId, uid) {
-  const normalizedUrl = normalizeUrl(url);
-  const cacheKey = `${uid}:${normalizedUrl}`;
-  urlSessionCache.set(cacheKey, {
-    sessionId,
-    timestamp: Date.now(),
-  });
-  console.log(`[Cache] Cached session ${sessionId} for ${cacheKey}`);
-}
-
-/**
- * Session storage - uses GCS in production, in-memory locally
- */
-async function saveSession(sessionId, data) {
-  if (IS_LOCAL) {
-    localSessions.set(sessionId, data);
-    return;
-  }
-  const file = bucket.file(`sessions/${sessionId}.json`);
-  await file.save(JSON.stringify(data), {
-    contentType: 'application/json',
-    metadata: { cacheControl: 'no-cache' },
-  });
-  console.log(`[GCS] Session ${sessionId} saved`);
-}
-
-async function getSession(sessionId) {
-  if (IS_LOCAL) {
-    return localSessions.get(sessionId) || null;
-  }
-  try {
-    const file = bucket.file(`sessions/${sessionId}.json`);
-    const [contents] = await file.download();
-    return JSON.parse(contents.toString());
-  } catch (err) {
-    if (err.code === 404) return null;
-    console.error(`[GCS] Error getting session ${sessionId}:`, err.message);
-    return null;
-  }
-}
-
-/**
- * Delete a file from GCS
- */
-async function deleteGcsFile(filePath) {
-  if (IS_LOCAL) return;
-  try {
-    await bucket.file(filePath).delete();
-    console.log(`[GCS] Deleted: ${filePath}`);
-  } catch (err) {
-    if (err.code !== 404) {
-      console.error(`[GCS] Error deleting ${filePath}:`, err.message);
-    }
-  }
-}
-
-/**
- * Delete a session and all its associated videos from GCS
- */
-async function deleteSessionAndVideos(sessionId) {
-  const session = await getAnalysisSession(sessionId);
-
-  if (!IS_LOCAL && bucket && session) {
-    // Delete all chunk videos
-    if (session.chunks) {
-      for (const chunk of session.chunks) {
-        if (chunk.status === 'ready') {
-          await deleteGcsFile(`videos/${sessionId}_${chunk.id}.mp4`);
-        }
-      }
-    }
-    // Delete session JSON
-    await deleteGcsFile(`sessions/${sessionId}.json`);
-  }
-
-  // Clean up memory cache
-  analysisSessions.delete(sessionId);
-
-  if (IS_LOCAL) {
-    // Clean up local files
-    if (session?.chunks) {
-      for (const chunk of session.chunks) {
-        const videoKey = `video_${sessionId}_${chunk.id}`;
-        const videoPath = localSessions.get(videoKey);
-        if (videoPath && fs.existsSync(videoPath)) {
-          fs.unlinkSync(videoPath);
-        }
-        localSessions.delete(videoKey);
-      }
-    }
-    localSessions.delete(sessionId);
-  }
-
-  console.log(`[Session] Deleted session ${sessionId} and all associated videos`);
-}
-
-/**
- * Get session from memory cache first, then GCS
- * Also populates memory cache from GCS for faster subsequent access
- */
-async function getAnalysisSession(sessionId) {
-  // Check memory cache first
-  if (analysisSessions.has(sessionId)) {
-    return analysisSessions.get(sessionId);
-  }
-
-  // Try loading from GCS
-  const session = await getSession(sessionId);
-  if (session) {
-    // Restore Map objects that were serialized as arrays
-    if (session.chunkTranscripts && Array.isArray(session.chunkTranscripts)) {
-      session.chunkTranscripts = new Map(session.chunkTranscripts);
-    } else if (!session.chunkTranscripts) {
-      session.chunkTranscripts = new Map();
-    }
-    if (session.chunkTexts && Array.isArray(session.chunkTexts)) {
-      session.chunkTexts = new Map(session.chunkTexts);
-    }
-    // Cache in memory for faster access
-    analysisSessions.set(sessionId, session);
-    console.log(`[Session] Restored session ${sessionId} from GCS`);
-  }
-  return session;
-}
-
-/**
- * Save session to both memory and GCS
- */
-async function setAnalysisSession(sessionId, session) {
-  // Save to memory
-  analysisSessions.set(sessionId, session);
-
-  // Save to GCS (serialize Map to array for JSON)
-  const sessionToSave = {
-    ...session,
-    chunkTranscripts: session.chunkTranscripts instanceof Map
-      ? Array.from(session.chunkTranscripts.entries())
-      : session.chunkTranscripts,
-    chunkTexts: session.chunkTexts instanceof Map
-      ? Array.from(session.chunkTexts.entries())
-      : session.chunkTexts,
-  };
-  await saveSession(sessionId, sessionToSave);
-}
-
-/**
- * Clean up old sessions and videos from GCS (older than 7 days)
- * GCS lifecycle policy handles most cleanup, but this runs on startup as a backup
- */
-async function cleanupOldSessions() {
-  if (IS_LOCAL || !bucket) {
-    console.log('[Cleanup] Skipping cleanup in local mode');
-    return;
-  }
-
-  const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
-  const cutoffDate = new Date(Date.now() - SEVEN_DAYS_MS);
-
-  try {
-    console.log(`[Cleanup] Looking for sessions older than ${cutoffDate.toISOString()}`);
-
-    // List all session files
-    const [sessionFiles] = await bucket.getFiles({ prefix: 'sessions/' });
-    let deletedCount = 0;
-
-    for (const file of sessionFiles) {
-      const [metadata] = await file.getMetadata();
-      const created = new Date(metadata.timeCreated);
-
-      if (created < cutoffDate) {
-        // Extract sessionId from filename (sessions/1234567890.json -> 1234567890)
-        const sessionId = file.name.replace('sessions/', '').replace('.json', '');
-
-        // Delete associated videos
-        const [videoFiles] = await bucket.getFiles({ prefix: `videos/${sessionId}_` });
-        for (const videoFile of videoFiles) {
-          await videoFile.delete().catch(() => {});
-        }
-
-        // Delete session file
-        await file.delete().catch(() => {});
-        deletedCount++;
-        console.log(`[Cleanup] Deleted old session: ${sessionId}`);
-      }
-    }
-
-    console.log(`[Cleanup] Complete. Deleted ${deletedCount} old sessions.`);
-  } catch (err) {
-    console.error('[Cleanup] Error during cleanup:', err.message);
-  }
-}
-
-/**
- * Rebuild the in-memory URL → sessionId cache from GCS sessions.
- * Called on startup so that cached sessions survive cold starts and deploys.
- */
-async function rebuildUrlCache() {
-  if (IS_LOCAL || !bucket) return;
-
-  try {
-    const [sessionFiles] = await bucket.getFiles({ prefix: 'sessions/' });
-    let cached = 0;
-
-    for (const file of sessionFiles) {
-      try {
-        const [contents] = await file.download();
-        const session = JSON.parse(contents.toString());
-        if (session.status === 'ready' && session.url && session.uid) {
-          const sessionId = file.name.replace('sessions/', '').replace('.json', '');
-          cacheSessionUrl(session.url, sessionId, session.uid);
-          cached++;
-        }
-      } catch {
-        // Skip unreadable sessions
-      }
-    }
-
-    console.log(`[Startup] Rebuilt URL cache: ${cached} sessions`);
-  } catch (err) {
-    console.error('[Startup] Failed to rebuild URL cache:', err.message);
-  }
-}
+// Initialize session store with GCS config
+initSessionStore({ bucket, isLocal: IS_LOCAL });
 
 /**
  * SSRF protection: validate that a URL is safe to proxy.
@@ -466,6 +100,7 @@ function isAllowedProxyUrl(urlString) {
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+app.use(helmet());
 app.use(cors({
   origin: [
     /^https:\/\/russian-transcription.*\.run\.app$/,
@@ -476,8 +111,37 @@ app.use(cors({
 app.use(express.json());
 
 // Health check — before auth so monitoring works without tokens
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok' });
+app.get('/api/health', async (req, res) => {
+  const checks = {
+    openai: !!process.env.OPENAI_API_KEY,
+    translate: !!process.env.GOOGLE_TRANSLATE_API_KEY,
+    gcs: !IS_LOCAL,
+  };
+
+  // Verify Firestore connectivity in production
+  if (!IS_LOCAL) {
+    try {
+      const { getFirestore } = await import('firebase-admin/firestore');
+      const firestore = getFirestore();
+      await firestore.listCollections();
+      checks.firestore = true;
+    } catch {
+      checks.firestore = false;
+    }
+  }
+
+  // Verify GCS connectivity in production
+  if (!IS_LOCAL && bucket) {
+    try {
+      await bucket.getMetadata();
+      checks.gcsConnected = true;
+    } catch {
+      checks.gcsConnected = false;
+    }
+  }
+
+  const healthy = checks.firestore !== false && checks.gcsConnected !== false;
+  res.status(healthy ? 200 : 503).json({ status: healthy ? 'ok' : 'degraded', ...checks });
 });
 
 // Auth middleware — all /api routes below require a valid Firebase ID token
@@ -549,7 +213,7 @@ const extractSentenceRateLimit = rateLimit({
 
 /**
  * Middleware: verify the requesting user owns the session.
- * Loads the session and attaches it as req.session / req.sessionId so
+ * Loads the session and attaches it as req.analysisSession / req.sessionId so
  * downstream handlers don't need to call getAnalysisSession() again.
  */
 async function requireSessionOwnership(req, res, next) {
@@ -562,7 +226,7 @@ async function requireSessionOwnership(req, res, next) {
     return res.status(403).json({ error: 'Access denied' });
   }
 
-  req.session = session;
+  req.analysisSession = session;
   req.sessionId = sessionId;
   next();
 }
@@ -583,6 +247,128 @@ app.get('/api/usage', (req, res) => {
       weekly: { used: getTranslateWeeklyCost(req.uid), limit: TRANSLATE_WEEKLY_LIMIT },
       monthly: { used: getTranslateMonthlyCost(req.uid), limit: TRANSLATE_MONTHLY_LIMIT },
     },
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Demo content — pre-processed sessions for first-time users
+// ---------------------------------------------------------------------------
+
+// In-memory cache: read demo JSON once on first request
+const demoCache = new Map();
+
+/**
+ * Load and cache a demo JSON file.
+ * Returns the parsed demo data or null if the file doesn't exist.
+ */
+function loadDemoData(type) {
+  if (demoCache.has(type)) return demoCache.get(type);
+  const filePath = path.join(__dirname, 'demo', `demo-${type}.json`);
+  if (!fs.existsSync(filePath)) return null;
+  const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  demoCache.set(type, data);
+  return data;
+}
+
+/**
+ * POST /api/demo
+ * Create an instant session from pre-processed demo content.
+ * No API calls, no rate limits, no budget — just hydrates a session from JSON.
+ * Body: { type: 'video' | 'text' }
+ */
+app.post('/api/demo', async (req, res) => {
+  const { type } = req.body;
+
+  if (!type || (type !== 'video' && type !== 'text')) {
+    return res.status(400).json({ error: 'type must be "video" or "text"' });
+  }
+
+  const demoData = loadDemoData(type);
+  if (!demoData) {
+    return res.status(404).json({ error: `Demo content not available for type "${type}"` });
+  }
+
+  const sessionId = crypto.randomUUID();
+
+  // Resolve media URLs for each chunk
+  const chunks = demoData.chunks.map(chunk => {
+    const mediaKey = type === 'text' ? 'audioUrl' : 'videoUrl';
+    let mediaUrl;
+
+    if (!IS_LOCAL && bucket && demoData.gcsMediaKeys?.[chunk.id]) {
+      // Production: generate signed URL from GCS
+      // Note: we'll resolve async below
+      mediaUrl = null; // placeholder, resolved below
+    } else if (demoData.localMediaFiles?.[chunk.id]) {
+      // Local dev: serve from server/demo/media/
+      const filename = demoData.localMediaFiles[chunk.id];
+      const localPath = path.join(__dirname, 'demo', 'media', filename);
+      if (fs.existsSync(localPath)) {
+        if (type === 'text') {
+          const key = `audio_${sessionId}_${chunk.id}`;
+          localSessions.set(key, localPath);
+          mediaUrl = `/api/local-audio/${sessionId}_${chunk.id}.mp3`;
+        } else {
+          const key = `video_${sessionId}_${chunk.id}`;
+          localSessions.set(key, localPath);
+          mediaUrl = `/api/local-video/${sessionId}_${chunk.id}.mp4`;
+        }
+      }
+    }
+
+    return {
+      ...chunk,
+      status: 'ready',
+      [mediaKey]: mediaUrl,
+    };
+  });
+
+  // Resolve GCS signed URLs (production only)
+  if (!IS_LOCAL && bucket && demoData.gcsMediaKeys) {
+    for (const chunk of chunks) {
+      const gcsKey = demoData.gcsMediaKeys[chunk.id];
+      if (gcsKey) {
+        const signedUrl = await getSignedMediaUrl(gcsKey);
+        if (type === 'text') {
+          chunk.audioUrl = signedUrl;
+        } else {
+          chunk.videoUrl = signedUrl;
+        }
+      }
+    }
+  }
+
+  // Build session with real ownership
+  const session = {
+    status: 'ready',
+    url: demoData.originalUrl,
+    uid: req.uid,
+    title: demoData.title,
+    contentType: demoData.contentType,
+    chunks,
+    totalDuration: demoData.totalDuration,
+    hasMoreChunks: demoData.hasMoreChunks || false,
+    chunkTranscripts: new Map(demoData.chunkTranscripts),
+    isDemo: true,
+  };
+
+  // For text mode, also restore chunkTexts if present
+  if (demoData.chunkTexts) {
+    session.chunkTexts = new Map(demoData.chunkTexts);
+  }
+
+  await setAnalysisSession(sessionId, session);
+
+  console.log(`[Demo] Created ${type} session ${sessionId} for user ${req.uid}`);
+
+  res.json({
+    sessionId,
+    status: 'cached',
+    title: demoData.title,
+    contentType: demoData.contentType,
+    totalDuration: demoData.totalDuration,
+    chunks,
+    hasMoreChunks: demoData.hasMoreChunks || false,
   });
 });
 
@@ -669,9 +455,6 @@ app.delete('/api/account', async (req, res) => {
     res.status(500).json({ error: error.message || 'Failed to delete account' });
   }
 });
-
-// Translation cache — LRU-bounded to prevent unbounded growth
-const translationCache = new LRUCache({ max: 10000 });
 
 /**
  * POST /api/translate
@@ -906,7 +689,7 @@ app.get('/api/local-audio/:filename', (req, res) => {
  * Proxy and rewrite HLS manifest
  */
 app.get('/api/hls/:sessionId/playlist.m3u8', requireSessionOwnership, async (req, res) => {
-  const session = req.session;
+  const session = req.analysisSession;
   if (!session.hlsUrl) {
     return res.status(404).json({ error: 'HLS URL not found for session' });
   }
@@ -919,7 +702,7 @@ app.get('/api/hls/:sessionId/playlist.m3u8', requireSessionOwnership, async (req
   try {
     const response = await fetch(session.hlsUrl, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'User-Agent': BROWSER_UA,
         'Referer': 'https://ok.ru/',
       },
     });
@@ -973,7 +756,7 @@ app.get('/api/hls/:sessionId/segment', requireSessionOwnership, async (req, res)
   try {
     const response = await fetch(url, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'User-Agent': BROWSER_UA,
         'Referer': 'https://ok.ru/',
       },
     });
@@ -1024,7 +807,7 @@ app.get('/api/video-proxy', requireAuth, async (req, res) => {
   try {
     const response = await fetch(url, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'User-Agent': BROWSER_UA,
         'Referer': new URL(url).origin,
       },
     });
@@ -1051,7 +834,7 @@ app.get('/api/video-proxy', requireAuth, async (req, res) => {
       // Re-fetch with range header
       const rangeResponse = await fetch(url, {
         headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'User-Agent': BROWSER_UA,
           'Referer': new URL(url).origin,
           'Range': `bytes=${start}-${end}`,
         },
@@ -1104,15 +887,6 @@ let activeAnalyses = 0;
 const DOWNLOAD_BUFFER = 20 * 60;  // Download 20 min of audio (5 chunks × 3 min = 15 min + 5 min buffer)
 const CHUNKS_PER_BATCH = 5;       // Show 5 chunks at a time (~15 min)
 const MIN_FINAL_CHUNK = 120;      // Minimum final chunk duration in seconds (merge if shorter)
-
-/**
- * Create progress callback for a session
- */
-function createProgressCallback(sessionId) {
-  return (type, percent, status, message) => {
-    sendProgress(sessionId, type, percent, status, message);
-  };
-}
 
 /**
  * POST /api/analyze
@@ -1406,7 +1180,7 @@ app.post('/api/analyze', analyzeRateLimit, analyzeDailyLimit, requireBudget, asy
  */
 app.post('/api/load-more-chunks', loadMoreRateLimit, requireSessionOwnership, async (req, res) => {
   const { sessionId } = req;
-  const session = req.session;
+  const session = req.analysisSession;
 
   console.log(`[LoadMore] Request for session ${sessionId}`);
 
@@ -1592,108 +1366,11 @@ app.get('/api/progress/:sessionId', requireSessionOwnership, (req, res) => {
 });
 
 /**
- * Terminal progress bar rendering
- */
-const TERM_COLORS = {
-  reset: '\x1b[0m',
-  bold: '\x1b[1m',
-  dim: '\x1b[2m',
-  blue: '\x1b[34m',
-  green: '\x1b[32m',
-  magenta: '\x1b[35m',
-  yellow: '\x1b[33m',
-  red: '\x1b[31m',
-  cyan: '\x1b[36m',
-  bgBlue: '\x1b[44m',
-  bgGreen: '\x1b[42m',
-  bgMagenta: '\x1b[45m',
-  bgYellow: '\x1b[43m',
-  bgRed: '\x1b[41m',
-  white: '\x1b[37m',
-};
-
-const TYPE_STYLES = {
-  audio:         { color: TERM_COLORS.blue,    label: 'AUDIO' },
-  transcription: { color: TERM_COLORS.green,   label: 'TRANSCRIBE' },
-  punctuation:   { color: TERM_COLORS.yellow,  label: 'PUNCTUATE' },
-  lemmatization: { color: TERM_COLORS.yellow,  label: 'LEMMATIZE' },
-  tts:           { color: TERM_COLORS.cyan,    label: 'TTS' },
-  video:         { color: TERM_COLORS.magenta,  label: 'VIDEO' },
-  complete:      { color: TERM_COLORS.green,   label: 'DONE' },
-  error:         { color: TERM_COLORS.red,     label: 'ERROR' },
-  connected:     { color: TERM_COLORS.cyan,    label: 'SSE' },
-};
-
-function renderProgressBar(percent, width = 30) {
-  const filled = Math.round((percent / 100) * width);
-  const empty = width - filled;
-  return '█'.repeat(filled) + '░'.repeat(empty);
-}
-
-function printProgress(sessionId, type, progress, status, message) {
-  const style = TYPE_STYLES[type] || { color: TERM_COLORS.white, label: type.toUpperCase() };
-  const { color, label } = style;
-  const { reset, bold, dim } = TERM_COLORS;
-
-  if (type === 'connected') {
-    console.log(`${dim}[${sessionId.slice(-6)}]${reset} ${color}${label}${reset} Client connected`);
-    return;
-  }
-
-  if (type === 'error') {
-    console.log(`${dim}[${sessionId.slice(-6)}]${reset} ${color}${bold}${label}${reset} ${message}`);
-    return;
-  }
-
-  if (type === 'complete') {
-    console.log(`${dim}[${sessionId.slice(-6)}]${reset} ${color}${bold}✓ ${label}${reset} ${message}`);
-    return;
-  }
-
-  const bar = renderProgressBar(progress);
-  const pct = `${String(progress).padStart(3)}%`;
-  // Use \r to overwrite line for same-type updates
-  process.stdout.write(`\r${dim}[${sessionId.slice(-6)}]${reset} ${color}${bold}${label.padEnd(10)}${reset} ${color}${bar}${reset} ${pct} ${dim}${message}${reset}\x1b[K`);
-
-  // Print newline when a phase completes (100%) so next output starts fresh
-  if (progress >= 100 || status === 'complete') {
-    process.stdout.write('\n');
-  }
-}
-
-/**
- * Send progress update to all connected clients for a session
- */
-/**
- * Rewrite known API error messages into user-friendly versions with actionable links.
- */
-function friendlyErrorMessage(message) {
-  if (message && message.includes('exceeded your current quota')) {
-    return 'OpenAI API quota exceeded. Add credits at https://platform.openai.com/settings/organization/billing';
-  }
-  return message;
-}
-
-function sendProgress(sessionId, type, progress, status, message, extra = {}) {
-  if (status === 'error') message = friendlyErrorMessage(message);
-  // Print to terminal
-  printProgress(sessionId, type, progress, status, message);
-
-  const clients = progressClients.get(sessionId);
-  if (clients && clients.length > 0) {
-    const data = JSON.stringify({ type, progress, status, message, ...extra });
-    clients.forEach(client => {
-      client.write(`data: ${data}\n\n`);
-    });
-  }
-}
-
-/**
  * GET /api/session/:sessionId
  * Get session data including chunk status
  */
 app.get('/api/session/:sessionId', requireSessionOwnership, async (req, res) => {
-  const session = req.session;
+  const session = req.analysisSession;
 
   if (session.status === 'ready') {
     // Return chunks with their current status (pending/downloading/ready)
@@ -1737,7 +1414,7 @@ app.get('/api/session/:sessionId', requireSessionOwnership, async (req, res) => 
  */
 app.get('/api/session/:sessionId/chunk/:chunkId', requireSessionOwnership, async (req, res) => {
   const { chunkId } = req.params;
-  const session = req.session;
+  const session = req.analysisSession;
 
   if (session.status !== 'ready') {
     return res.status(404).json({ error: 'Session not ready. Please re-analyze the video.' });
@@ -1782,7 +1459,7 @@ app.get('/api/session/:sessionId/chunk/:chunkId', requireSessionOwnership, async
 app.post('/api/download-chunk', downloadChunkRateLimit, requireBudget, requireSessionOwnership, async (req, res) => {
   const { chunkId } = req.body;
   const { sessionId } = req;
-  const session = req.session;
+  const session = req.analysisSession;
 
   if (session.status !== 'ready') {
     return res.status(404).json({ error: 'Session not ready. Please re-analyze the video.' });
@@ -2159,7 +1836,7 @@ if (fs.existsSync(distPath)) {
 }
 
 // Export for tests
-export { app, analysisSessions, localSessions, progressClients, translationCache, urlSessionCache, isAllowedProxyUrl, MAX_CONCURRENT_ANALYSES };
+export { app, analysisSessions, localSessions, progressClients, translationCache, urlSessionCache, isAllowedProxyUrl, MAX_CONCURRENT_ANALYSES, demoCache, getAnalysisSession, setAnalysisSession };
 
 // Test helper: get/reset active analysis count
 export function getActiveAnalyses() { return activeAnalyses; }
@@ -2189,14 +1866,18 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   });
 
   // Graceful shutdown: Cloud Run sends SIGTERM before killing the container
-  process.on('SIGTERM', () => {
-    console.log('[Shutdown] SIGTERM received, closing server...');
+  async function gracefulShutdown(signal) {
+    console.log(`[Shutdown] ${signal} received, flushing usage data...`);
+    await flushAllUsage().catch(err => console.error('[Shutdown] Usage flush error:', err.message));
+    console.log('[Shutdown] Closing server...');
     server.close(() => {
       console.log('[Shutdown] Server closed');
       process.exit(0);
     });
     // Force exit after 10s if connections don't drain
     setTimeout(() => process.exit(0), 10_000);
-  });
+  }
+  process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+  process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 }
 

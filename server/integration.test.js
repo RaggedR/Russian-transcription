@@ -9,6 +9,8 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import http from 'http';
 import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
 // ---------------------------------------------------------------------------
 // Mock auth.js — bypass Firebase Admin token verification in tests
@@ -43,6 +45,7 @@ vi.mock('./usage.js', () => ({
   getTranslateMonthlyCost: () => 1.00,
   getRemainingBudget: () => 1,
   initUsageStore: vi.fn().mockResolvedValue(undefined),
+  flushAllUsage: vi.fn().mockResolvedValue(undefined),
   DAILY_LIMIT: 1.00,
   WEEKLY_LIMIT: 5.00,
   MONTHLY_LIMIT: 10.00,
@@ -121,6 +124,7 @@ import {
   MAX_CONCURRENT_ANALYSES,
   getActiveAnalyses,
   resetActiveAnalyses,
+  demoCache,
 } from './index.js';
 
 // ---------------------------------------------------------------------------
@@ -332,6 +336,9 @@ beforeEach(() => {
   // Reset concurrency counter
   resetActiveAnalyses();
 
+  // Clear demo cache
+  demoCache.clear();
+
   // Ensure OPENAI_API_KEY is set for tests that need it
   process.env.OPENAI_API_KEY = 'test-key';
   process.env.GOOGLE_TRANSLATE_API_KEY = 'test-google-key';
@@ -342,11 +349,20 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 
 describe('A. Health Check', () => {
-  it('GET /api/health returns { status: "ok" }', async () => {
+  it('GET /api/health returns status ok with config flags', async () => {
     const res = await fetch(`${baseUrl}/api/health`);
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body).toEqual({ status: 'ok' });
+    expect(body.status).toBe('ok');
+    expect(body).toHaveProperty('openai');
+    expect(body).toHaveProperty('translate');
+    expect(body).toHaveProperty('gcs');
+  });
+
+  it('GET /api/health includes security headers from helmet', async () => {
+    const res = await fetch(`${baseUrl}/api/health`);
+    expect(res.headers.get('x-content-type-options')).toBe('nosniff');
+    expect(res.headers.get('x-frame-options')).toBeTruthy();
   });
 });
 
@@ -1521,5 +1537,215 @@ describe('R. DELETE /api/account', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.success).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// S. POST /api/demo — Pre-processed Demo Content
+// ---------------------------------------------------------------------------
+
+describe('S. POST /api/demo', () => {
+  /**
+   * Write a minimal demo JSON file for testing.
+   * Returns the path so we can clean up.
+   */
+  function writeDemoJson(type) {
+    const demoDir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'demo');
+    if (!fs.existsSync(demoDir)) fs.mkdirSync(demoDir, { recursive: true });
+
+    const isText = type === 'text';
+    const data = {
+      title: isText ? 'Толстой — Детство' : 'Demo Russian Video',
+      contentType: type,
+      totalDuration: isText ? 0 : 180,
+      originalUrl: isText ? 'http://az.lib.ru/t/tolstoj.shtml' : 'https://ok.ru/video/400776431053',
+      hasMoreChunks: false,
+      chunks: [
+        {
+          id: 'chunk-0',
+          index: 0,
+          startTime: 0,
+          endTime: isText ? 0 : 180,
+          duration: isText ? 0 : 180,
+          previewText: isText ? 'Счастливая, счастливая...' : 'Привет, как дела...',
+          wordCount: 50,
+          status: 'ready',
+        },
+      ],
+      chunkTranscripts: [
+        ['chunk-0', {
+          words: [
+            { word: 'Привет,', start: 0, end: 0.4, lemma: 'привет' },
+            { word: 'как', start: 0.5, end: 0.7, lemma: 'как' },
+            { word: 'дела?', start: 0.8, end: 1.2, lemma: 'дело' },
+          ],
+          segments: [{ text: 'Привет, как дела?', start: 0, end: 1.2 }],
+          language: 'ru',
+          duration: isText ? 30 : 180,
+        }],
+      ],
+      localMediaFiles: {},
+      gcsMediaKeys: {},
+    };
+
+    if (isText) {
+      data.chunkTexts = [['chunk-0', 'Привет, как дела?']];
+    }
+
+    const filePath = path.join(demoDir, `demo-${type}.json`);
+    fs.writeFileSync(filePath, JSON.stringify(data));
+    return filePath;
+  }
+
+  function cleanupDemoJson(type) {
+    const filePath = path.join(path.dirname(fileURLToPath(import.meta.url)), 'demo', `demo-${type}.json`);
+    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+  }
+
+  it('returns 400 for missing type', async () => {
+    const res = await fetch(`${baseUrl}/api/demo`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toMatch(/type must be/i);
+  });
+
+  it('returns 400 for invalid type', async () => {
+    const res = await fetch(`${baseUrl}/api/demo`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'podcast' }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('returns 404 when demo JSON does not exist', async () => {
+    const res = await fetch(`${baseUrl}/api/demo`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'video' }),
+    });
+    expect(res.status).toBe(404);
+    const body = await res.json();
+    expect(body.error).toMatch(/not available/i);
+  });
+
+  it('video demo creates a session owned by the requesting user', async () => {
+    const filePath = writeDemoJson('video');
+    try {
+      const res = await fetch(`${baseUrl}/api/demo`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'video' }),
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+
+      expect(body.sessionId).toBeTruthy();
+      expect(body.status).toBe('cached');
+      expect(body.title).toBe('Demo Russian Video');
+      expect(body.contentType).toBe('video');
+      expect(body.totalDuration).toBe(180);
+      expect(body.chunks).toBeInstanceOf(Array);
+      expect(body.chunks.length).toBe(1);
+      expect(body.chunks[0].status).toBe('ready');
+      expect(body.hasMoreChunks).toBe(false);
+
+      // Session should be owned by the test user
+      const session = analysisSessions.get(body.sessionId);
+      expect(session).toBeTruthy();
+      expect(session.uid).toBe('test-user');
+      expect(session.isDemo).toBe(true);
+    } finally {
+      cleanupDemoJson('video');
+    }
+  });
+
+  it('text demo creates a session with text content type', async () => {
+    const filePath = writeDemoJson('text');
+    try {
+      const res = await fetch(`${baseUrl}/api/demo`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'text' }),
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+
+      expect(body.contentType).toBe('text');
+      expect(body.title).toBe('Толстой — Детство');
+      expect(body.chunks[0].status).toBe('ready');
+    } finally {
+      cleanupDemoJson('text');
+    }
+  });
+
+  it('demo session is accessible via GET /api/session/:id', async () => {
+    writeDemoJson('video');
+    try {
+      const demoRes = await fetch(`${baseUrl}/api/demo`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'video' }),
+      });
+      const { sessionId } = await demoRes.json();
+
+      const sessionRes = await fetch(`${baseUrl}/api/session/${sessionId}`);
+      expect(sessionRes.status).toBe(200);
+      const session = await sessionRes.json();
+      expect(session.status).toBe('ready');
+      expect(session.title).toBe('Demo Russian Video');
+      expect(session.contentType).toBe('video');
+    } finally {
+      cleanupDemoJson('video');
+    }
+  });
+
+  it('demo chunk data is accessible via GET /api/session/:id/chunk/:chunkId', async () => {
+    writeDemoJson('video');
+    try {
+      const demoRes = await fetch(`${baseUrl}/api/demo`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'video' }),
+      });
+      const { sessionId } = await demoRes.json();
+
+      const chunkRes = await fetch(`${baseUrl}/api/session/${sessionId}/chunk/chunk-0`);
+      expect(chunkRes.status).toBe(200);
+      const chunkData = await chunkRes.json();
+      expect(chunkData.transcript).toBeTruthy();
+      expect(chunkData.transcript.words).toBeInstanceOf(Array);
+      expect(chunkData.transcript.words.length).toBe(3);
+      expect(chunkData.title).toMatch(/Part 1/);
+    } finally {
+      cleanupDemoJson('video');
+    }
+  });
+
+  it('each demo request creates a separate session', async () => {
+    writeDemoJson('video');
+    try {
+      const res1 = await fetch(`${baseUrl}/api/demo`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'video' }),
+      });
+      const body1 = await res1.json();
+
+      const res2 = await fetch(`${baseUrl}/api/demo`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'video' }),
+      });
+      const body2 = await res2.json();
+
+      expect(body1.sessionId).not.toBe(body2.sessionId);
+    } finally {
+      cleanupDemoJson('video');
+    }
   });
 });

@@ -54,8 +54,9 @@ cd e2e && npx playwright install chromium
 **Test files:**
 - `tests/typecheck.test.js` — Runs `tsc -b` to catch TypeScript errors (30s timeout)
 - `server/media.test.js` — Unit tests for heartbeat, stripPunctuation, editDistance, isFuzzyMatch
+- `server/usage.test.js` — Unit tests for cost tracking, budget middleware, limit constants
 - `server/integration.test.js` — Mocks `media.js`, tests all Express endpoints, SSE, session lifecycle
-- `e2e/tests/*.spec.ts` — Playwright E2E tests: app loading, video flow, word popup, flashcard review, add-to-deck, edge cases
+- `e2e/tests/*.spec.ts` — Playwright E2E tests: app loading, video flow, word popup, flashcard review, add-to-deck, settings features, edge cases
 
 ## Setup
 
@@ -135,6 +136,12 @@ Express.js on port 3001 (local) / `PORT` env var (Cloud Run). Key files:
 - Google Translate budget: $0.50/day, $2.50/week, $5/month (`requireTranslateBudget`)
 - Costs tracked in-memory (resets on restart); see `server/usage.js` for per-call estimates
 
+**Input Validation & CORS:**
+- CORS whitelist: Cloud Run origin pattern, `localhost:5173`, `localhost:3001` (not open `cors()`)
+- `/api/analyze` rejects URLs that aren't ok.ru or lib.ru
+- `/api/translate` rejects words >200 chars; `/api/extract-sentence` rejects words >200 or text >5000 chars
+- SSRF protection on video proxy: blocks private IPs, localhost, GCP metadata endpoint
+
 **Key patterns in `media.js`:**
 - `addPunctuation()` uses a two-pointer algorithm to align GPT-4o's punctuated output back to original Whisper word timestamps
 - `createHeartbeat()` sends periodic SSE updates during long-running operations (extraction, download, transcription)
@@ -154,23 +161,28 @@ Express.js on port 3001 (local) / `PORT` env var (Cloud Run). Key files:
 | POST | `/api/translate` | auth + translate budget | Google Translate proxy with caching |
 | POST | `/api/extract-sentence` | auth + budget | GPT-powered sentence extraction + translation |
 | GET | `/api/progress/:sessionId` | auth + owner | SSE stream for progress events |
+| GET | `/api/usage` | auth | Per-user API cost consumption (OpenAI + Translate) |
+| DELETE | `/api/account` | auth | Delete account: Firestore + GCS + in-memory + Auth cleanup |
 | GET | `/api/hls/:sessionId/playlist.m3u8` | auth + owner | Proxy and rewrite HLS manifest |
 | GET | `/api/hls/:sessionId/segment` | auth + owner | Proxy HLS segments |
 
 ### Frontend
 
 - `App.tsx` — State machine managing view transitions, SSE subscriptions. Two content modes: `video` (ok.ru) and `text` (lib.ru)
-- `src/services/api.ts` — API client with SSE + polling fallback
+- `src/services/api.ts` — API client with SSE + polling fallback. Exports `getUsage()`, `deleteAccount()`.
 - `src/types/index.ts` — Shared types: `WordTimestamp`, `Transcript`, `VideoChunk`, `SessionResponse`, `ProgressState`, `SRSCard`
+- `src/legal.ts` — `TERMS_OF_SERVICE` and `PRIVACY_POLICY` string constants, used in both `SettingsPanel` and `LoginScreen`
+- `src/components/SettingsPanel.tsx` — Accepts `cards`, `userId`, `onDeleteAccount` props. Features: frequency range config, deck export (JSON Blob download), usage bars (color-coded: green/yellow/red), collapsible legal docs, account deletion with "DELETE" confirmation.
+- `src/components/LoginScreen.tsx` — Google Sign-In button with expandable ToS/Privacy agreement text
 
 ### SRS Flashcard System
 
 - `src/hooks/useDeck.ts` — Deck state with Firestore persistence (debounced 500ms writes). Accepts `userId` from `useAuth`. Falls back to localStorage if Firestore is unavailable. Migrates existing localStorage data to Firestore on first load.
-- `src/hooks/useAuth.ts` — Google Sign-In via `signInWithPopup` + `GoogleAuthProvider`. Tracks state via `onAuthStateChanged`. Returns `{ userId, user, isLoading, signInWithGoogle, signOut }`. Includes E2E test bypass (build-time `VITE_E2E_TEST` env var).
+- `src/hooks/useAuth.ts` — Google Sign-In via `signInWithPopup` + `GoogleAuthProvider`. Tracks state via `onAuthStateChanged`. Returns `{ userId, user, isLoading, signInWithGoogle, signOut }`. E2E test bypass: build-time `VITE_E2E_TEST` selects stateful `useAuthE2E` (supports sign-out). Tests can set `window.__E2E_NO_AUTH = true` via `addInitScript` to start logged-out.
 - `src/firebase.ts` — Firebase app/auth/firestore initialization. Config from `VITE_FIREBASE_*` env vars.
 - `src/utils/sm2.ts` — SM-2 spaced repetition algorithm with Anki-like learning steps (1min/5min) and graduated review intervals.
 - `src/components/ReviewPanel.tsx` — Flashcard review UI with keyboard shortcuts (1-4 for ratings, Space/Enter for show/good).
-- `firestore.rules` — Security rules: `decks/{userId}` writable only by matching `auth.uid`. Deploy with `firebase deploy --only firestore:rules`.
+- `firestore.rules` — Security rules: `decks/{userId}` read/write by matching `auth.uid` (write requires `cards` is list); `usage/{userId}` read/delete by matching `auth.uid`. Deploy with `firebase deploy --only firestore:rules`.
 - Sentence extraction: scans the words array for sentence-ending punctuation (`.!?…`) to extract only the containing sentence as flashcard context, not the full Whisper segment.
 
 ### Word Frequency Highlighting
@@ -187,10 +199,11 @@ Express.js on port 3001 (local) / `PORT` env var (Cloud Run). Key files:
 - **Config**: Enabled only when DSN is set (`SENTRY_DSN` for backend, `VITE_SENTRY_DSN` for frontend). No-op during tests (`VITEST` env / `VITE_E2E_TEST` flag). `tracesSampleRate: 0.2` (20% of transactions traced).
 - **GCP secret**: `sentry-dsn` in Secret Manager, mapped to `SENTRY_DSN` env var in Cloud Run.
 
-### CI/CD
+### CI/CD & Monitoring
 
 - **GitHub Actions** (`.github/workflows/ci.yml`): lint → build → vitest (frontend + server) → Playwright E2E on every PR. Auto-deploys to Cloud Run on merge to main via Workload Identity Federation.
 - Skips CI for docs-only changes (`.md`, `.txt`, `LICENSE`).
+- **GCP Monitoring**: `scripts/setup-monitoring.sh <email>` — idempotent setup of uptime check on `/api/health` (5min interval) + email alert policy.
 
 ### Deployment
 
@@ -229,19 +242,14 @@ GCP project: `russian-transcription`, Cloud Run service: `russian-transcription`
 - ~~Per-user rate limiting + cost tracking~~ (PR #8)
 - ~~CI/CD: GitHub Actions for lint, test, deploy~~ (PR #15)
 - ~~Session security: crypto.randomUUID(), session ownership, access validation~~
+- ~~Sentry error monitoring~~ (PR #16)
+- ~~Production hardening: SSRF, CORS, input validation, concurrency limits~~ (PR #18)
+- ~~Legal docs, usage UI, deck export, account deletion, GCP monitoring~~ (PR #19)
 
-### Payment (Priority: HIGH)
+### Payment (Priority: HIGH — Next)
 - Add Stripe subscription: $10/month, first month free
-- Track per-user API usage (Whisper minutes, translations, TTS calls)
 - Enforce usage quotas per tier (free trial vs paid)
 
-### Monitoring & Error Tracking
-- ~~Add Sentry or equivalent for error alerting~~
-- Cloud Run error rate alerts via GCP Monitoring
-
-### Data Persistence
-- Server-side deck backup (currently localStorage + Firestore)
-- Export/import deck functionality
-
-### Mobile
+### Future
+- Import deck functionality (export already implemented)
 - Android app (React Native or PWA wrapper)
