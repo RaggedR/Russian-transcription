@@ -156,7 +156,7 @@ function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
   // Auth + Spaced repetition deck
-  const { userId, user, isLoading: authLoading, signInWithGoogle, signOut } = useAuth();
+  const { userId, user, isLoading: authLoading, authError, signInWithGoogle, signOut } = useAuth();
   const { cards, dueCards, dueCount, addCard, removeCard, reviewCard, isWordInDeck, saveError, clearSaveError } = useDeck(userId);
   const [isReviewOpen, setIsReviewOpen] = useState(false);
 
@@ -165,7 +165,7 @@ function App() {
 
   // Error state
   const [error, setError] = useState<string | null>(null);
-  const [authError, setAuthError] = useState<string | null>(null);
+  const [localAuthError, setAuthError] = useState<string | null>(null);
 
   useEffect(() => {
     saveSettings(config);
@@ -722,7 +722,7 @@ function App() {
             }
           });
         }}
-        error={authError}
+        error={authError || localAuthError}
       />
     );
   }

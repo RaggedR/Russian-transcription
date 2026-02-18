@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { onAuthStateChanged, signInWithRedirect, signOut as firebaseSignOut, GoogleAuthProvider } from 'firebase/auth';
+import { onAuthStateChanged, signInWithPopup, getRedirectResult, signOut as firebaseSignOut, GoogleAuthProvider } from 'firebase/auth';
 import { auth } from '../firebase';
 
 export interface AuthUser {
@@ -12,6 +12,7 @@ export interface AuthState {
   userId: string | null;
   user: AuthUser | null;
   isLoading: boolean;
+  authError: string | null;
   signInWithGoogle: () => Promise<void>;
   signOut: () => Promise<void>;
 }
@@ -22,8 +23,14 @@ function useAuthReal(): AuthState {
   const [userId, setUserId] = useState<string | null>(null);
   const [user, setUser] = useState<AuthUser | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [authError, setAuthError] = useState<string | null>(null);
 
   useEffect(() => {
+    // Check for redirect result on page load
+    getRedirectResult(auth).catch((err) => {
+      setAuthError(`Redirect: ${err.code} — ${err.message}`);
+    });
+
     const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
       if (firebaseUser) {
         setUserId(firebaseUser.uid);
@@ -32,6 +39,7 @@ function useAuthReal(): AuthState {
           photoURL: firebaseUser.photoURL,
           email: firebaseUser.email,
         });
+        setAuthError(null);
       } else {
         setUserId(null);
         setUser(null);
@@ -43,14 +51,19 @@ function useAuthReal(): AuthState {
   }, []);
 
   const signInWithGoogle = useCallback(async () => {
-    await signInWithRedirect(auth, googleProvider);
+    setAuthError(null);
+    try {
+      await signInWithPopup(auth, googleProvider);
+    } catch (err: any) {
+      setAuthError(`${err.code} — ${err.message}`);
+    }
   }, []);
 
   const signOut = useCallback(async () => {
     await firebaseSignOut(auth);
   }, []);
 
-  return { userId, user, isLoading, signInWithGoogle, signOut };
+  return { userId, user, isLoading, authError, signInWithGoogle, signOut };
 }
 
 // E2E test bypass — return a mock user immediately so Playwright tests
@@ -68,6 +81,7 @@ function useAuthE2E(): AuthState {
     userId: loggedIn ? 'e2e-test-user' : null,
     user: loggedIn ? { displayName: 'Test User', photoURL: null, email: 'test@example.com' } : null,
     isLoading: false,
+    authError: null,
     signInWithGoogle: useCallback(async () => { setLoggedIn(true); }, []),
     signOut: useCallback(async () => { setLoggedIn(false); }, []),
   };
