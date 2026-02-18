@@ -359,7 +359,9 @@ describe('A. Health Check', () => {
     expect(body).toHaveProperty('gcs');
   });
 
-  it('GET /api/health includes security headers from helmet', async () => {
+  // helmet disabled — breaks Firebase Google Sign-In (see PR #23)
+  // Re-enable this test when helmet is re-added with a working config
+  it.skip('GET /api/health includes security headers from helmet', async () => {
     const res = await fetch(`${baseUrl}/api/health`);
     expect(res.headers.get('x-content-type-options')).toBe('nosniff');
     expect(res.headers.get('x-frame-options')).toBeTruthy();
