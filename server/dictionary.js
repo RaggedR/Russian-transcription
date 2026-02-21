@@ -27,6 +27,10 @@ let index = new Map();
  *
  * The apostrophe appears after the stressed vowel in the source data.
  * We replace (vowel)(') with (vowel)(U+0301 combining acute accent).
+ *
+ * Intentionally passes null/undefined through unchanged — this allows the
+ * build*Entry functions to call convertStress on optional TSV fields without
+ * needing separate null checks (empty fields parse as '' from TSV).
  */
 export function convertStress(text) {
   if (!text) return text;
@@ -56,7 +60,9 @@ function parseTranslations(raw) {
 }
 
 /**
- * Normalize ё→е for index lookup (same as frontend normalizeWord).
+ * Normalize ё→е for index lookup.
+ * Similar to normalizeCardId() in src/utils/sm2.ts on the frontend,
+ * but without punctuation stripping (TSV bare forms have no punctuation).
  */
 function normalizeForLookup(word) {
   return word.toLowerCase().replace(/ё/g, 'е');

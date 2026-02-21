@@ -64,7 +64,8 @@ export function WordPopup({
       }
       onAddToDeck(translation.word, translation.translation, translation.sourceLanguage, sentence, contextTranslation, translation.dictionary);
     } catch {
-      // Still add without sentence if extraction fails
+      // Still add without sentence if extraction fails — dictionary data is kept
+      // since the dictionary lookup succeeded (only sentence extraction failed)
       onAddToDeck(translation.word, translation.translation, translation.sourceLanguage, undefined, undefined, translation.dictionary);
     } finally {
       setIsAddingToDeck(false);

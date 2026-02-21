@@ -4,6 +4,9 @@
  * Uses small fixture TSVs in server/test-fixtures/openrussian/ (3 nouns,
  * 2 verbs, 1 adjective, 2 others) to test parsing, stress conversion,
  * and word lookup without downloading the full ~21MB dataset.
+ *
+ * Note: Fixture files use .csv extension despite being TSV (tab-separated) —
+ * this matches the upstream Badestrand/russian-dictionary repo naming convention.
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';

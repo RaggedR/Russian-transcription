@@ -721,9 +721,12 @@ app.post('/api/translate', translateRateLimit, requireSubscription, requireBudge
 
   const cacheKey = `ru:${word.toLowerCase()}`;
 
-  // Check cache
+  // Check cache (caches Google Translate result only — dictionary looked up fresh
+  // each time so updates to dictionary data are reflected immediately)
   if (translationCache.has(cacheKey)) {
-    return res.json(translationCache.get(cacheKey));
+    const cached = translationCache.get(cacheKey);
+    const dictionary = lookupWord(word, lemma) || undefined;
+    return res.json({ ...cached, dictionary });
   }
 
   try {
@@ -760,8 +763,8 @@ app.post('/api/translate', translateRateLimit, requireSubscription, requireBudge
       dictionary,
     };
 
-    // Cache result
-    translationCache.set(cacheKey, result);
+    // Cache the Google Translate part only (dictionary looked up fresh on each request)
+    translationCache.set(cacheKey, { word, translation: result.translation, sourceLanguage: 'ru' });
     trackTranslateCost(req.uid, costs.translate(word.length));
 
     res.json(result);
