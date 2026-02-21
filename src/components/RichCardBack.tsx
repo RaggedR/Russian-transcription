@@ -3,7 +3,7 @@ import type { DictionaryEntry, NounDeclension, VerbConjugation, AdjectiveForms }
 
 // ── Sample data for preview ─────────────────────────────────────────
 
-export const SAMPLE_ENTRIES: DictionaryEntry[] = [
+const SAMPLE_ENTRIES: DictionaryEntry[] = [
   {
     stressedForm: 'вре́мя',
     pos: 'noun',
@@ -293,6 +293,7 @@ interface ReviewState {
   current: QueueItem | null;
   showAnswer: boolean;
   reviewedCount: number;
+  waitingSeconds: number | null;
 }
 
 function makeInitialState(): ReviewState {
@@ -301,6 +302,7 @@ function makeInitialState(): ReviewState {
     current: { entry: SAMPLE_ENTRIES[0], dueAt: 0 },
     showAnswer: false,
     reviewedCount: 0,
+    waitingSeconds: null,
   };
 }
 
@@ -320,46 +322,57 @@ export function RichCardPreview() {
   const [state, setState] = useState<ReviewState>(makeInitialState);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const { queue, current, showAnswer, reviewedCount } = state;
+  const { queue, current, showAnswer, reviewedCount, waitingSeconds } = state;
   const hasWaiting = current === null && queue.length > 0;
 
-  // Timer for waiting cards
+  // Timer for waiting cards — updates waitingSeconds countdown and pops ready cards
   useEffect(() => {
     if (!hasWaiting) {
       if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
       return;
     }
-    // Check every second if a waiting card is ready
+    // Check every second if a waiting card is ready, and update countdown
     timerRef.current = setInterval(() => {
       setState(prev => {
+        const now = Date.now();
         const popped = popNextFrom(prev.queue);
         if (popped.current) {
-          return { ...prev, current: popped.current, queue: popped.queue, showAnswer: false };
+          return { ...prev, current: popped.current, queue: popped.queue, showAnswer: false, waitingSeconds: null };
         }
-        return prev; // still waiting
+        // Update countdown
+        const nearestDue = Math.min(...prev.queue.map(i => i.dueAt));
+        return { ...prev, waitingSeconds: Math.max(1, Math.ceil((nearestDue - now) / 1000)) };
       });
     }, 1000);
     return () => { if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; } };
-  }, [hasWaiting]);
+  }, [hasWaiting, queue]);
 
   const handleRate = (label: string) => {
     setState(prev => {
       if (!prev.current) return prev;
       let newQueue = prev.queue;
+      const now = Date.now();
 
       if (label === 'Again') {
-        newQueue = [...newQueue, { entry: prev.current.entry, dueAt: Date.now() + 60_000 }];
+        newQueue = [...newQueue, { entry: prev.current.entry, dueAt: now + 60_000 }];
       } else if (label === 'Hard') {
-        newQueue = [...newQueue, { entry: prev.current.entry, dueAt: Date.now() + 300_000 }];
+        newQueue = [...newQueue, { entry: prev.current.entry, dueAt: now + 300_000 }];
       }
       // Good / Easy — card just leaves
 
       const popped = popNextFrom(newQueue);
+      // Compute initial waitingSeconds if entering waiting state
+      let waitingSecs: number | null = null;
+      if (!popped.current && popped.queue.length > 0) {
+        const nearest = Math.min(...popped.queue.map(i => i.dueAt));
+        waitingSecs = Math.max(1, Math.ceil((nearest - now) / 1000));
+      }
       return {
         queue: popped.queue,
         current: popped.current,
         showAnswer: false,
         reviewedCount: prev.reviewedCount + 1,
+        waitingSeconds: waitingSecs,
       };
     });
   };
@@ -387,14 +400,12 @@ export function RichCardPreview() {
   }
 
   // Waiting for learning card
-  if (hasWaiting) {
-    const nearest = Math.min(...queue.map(i => i.dueAt));
-    const secsLeft = Math.max(1, Math.ceil((nearest - Date.now()) / 1000));
+  if (hasWaiting && waitingSeconds !== null) {
     return (
       <div className="text-center py-12">
         <p className="text-lg font-medium text-gray-900 mb-2">Learning card coming up...</p>
         <p className="text-3xl font-mono text-blue-600 mb-4">
-          {Math.floor(secsLeft / 60)}:{String(secsLeft % 60).padStart(2, '0')}
+          {Math.floor(waitingSeconds / 60)}:{String(waitingSeconds % 60).padStart(2, '0')}
         </p>
         <p className="text-sm text-gray-500">Reviewed {reviewedCount} so far</p>
       </div>
