@@ -79,7 +79,7 @@ test.describe('Legal documents in settings', () => {
   });
 });
 
-test.describe('Legal agreement on login screen', () => {
+test.describe('Legal agreement on landing page', () => {
   test('shows agreement text with expandable legal docs', async ({ page }) => {
     // Set E2E no-auth flag so the E2E auth bypass starts in logged-out state
     await page.addInitScript(() => {
@@ -170,7 +170,7 @@ test.describe('Account deletion', () => {
     await page.getByTestId('delete-confirm-input').fill('DELETE');
     await page.getByTestId('delete-account-btn').click();
 
-    // Should redirect to login screen (sign in button visible)
-    await expect(page.locator('text=Sign in with Google')).toBeVisible({ timeout: 5000 });
+    // Should redirect to landing page (Get Started button visible)
+    await expect(page.getByTestId('get-started-btn')).toBeVisible({ timeout: 5000 });
   });
 });

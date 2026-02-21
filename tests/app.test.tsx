@@ -3,10 +3,10 @@ import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 
 // ─── Mock child components (stubs with data-testid) ───────
 
-vi.mock('../src/components/LoginScreen', () => ({
-  LoginScreen: ({ onSignIn, error }: any) => (
-    <div data-testid="login-screen">
-      <button data-testid="sign-in-btn" onClick={onSignIn}>Sign in</button>
+vi.mock('../src/components/LandingPage', () => ({
+  LandingPage: ({ onSignIn, error }: any) => (
+    <div data-testid="landing-page">
+      <button data-testid="get-started-btn" onClick={onSignIn}>Get Started</button>
       {error && <span data-testid="auth-error">{error}</span>}
     </div>
   ),
@@ -256,11 +256,11 @@ describe('App', () => {
 
       const { container } = render(<App />);
       expect(container.querySelector('.animate-spin')).not.toBeNull();
-      expect(screen.queryByTestId('login-screen')).toBeNull();
+      expect(screen.queryByTestId('landing-page')).toBeNull();
       expect(screen.queryByTestId('video-input')).toBeNull();
     });
 
-    it('shows LoginScreen when not authenticated', () => {
+    it('shows LandingPage when not authenticated', () => {
       mockedUseAuth.mockReturnValue({
         userId: null,
         user: null,
@@ -270,18 +270,18 @@ describe('App', () => {
       });
 
       render(<App />);
-      expect(screen.getByTestId('login-screen')).toBeInTheDocument();
+      expect(screen.getByTestId('landing-page')).toBeInTheDocument();
       expect(screen.queryByTestId('video-input')).toBeNull();
     });
 
     it('shows main app when authenticated', () => {
       render(<App />);
-      expect(screen.queryByTestId('login-screen')).toBeNull();
+      expect(screen.queryByTestId('landing-page')).toBeNull();
       expect(screen.getByTestId('video-input')).toBeInTheDocument();
       expect(screen.getByTestId('text-input')).toBeInTheDocument();
     });
 
-    it('calls signInWithGoogle on sign-in button click', async () => {
+    it('calls signInWithGoogle on Get Started button click', async () => {
       mockedUseAuth.mockReturnValue({
         userId: null,
         user: null,
@@ -292,7 +292,7 @@ describe('App', () => {
 
       render(<App />);
       await act(async () => {
-        fireEvent.click(screen.getByTestId('sign-in-btn'));
+        fireEvent.click(screen.getByTestId('get-started-btn'));
       });
       expect(mockSignInWithGoogle).toHaveBeenCalledTimes(1);
     });
@@ -309,7 +309,7 @@ describe('App', () => {
 
       render(<App />);
       await act(async () => {
-        fireEvent.click(screen.getByTestId('sign-in-btn'));
+        fireEvent.click(screen.getByTestId('get-started-btn'));
       });
 
       await waitFor(() => {
@@ -332,7 +332,7 @@ describe('App', () => {
 
       render(<App />);
       await act(async () => {
-        fireEvent.click(screen.getByTestId('sign-in-btn'));
+        fireEvent.click(screen.getByTestId('get-started-btn'));
       });
 
       // Wait for catch handler to process

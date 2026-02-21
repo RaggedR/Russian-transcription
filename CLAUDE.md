@@ -215,11 +215,11 @@ Express.js on port 3001 (local) / `PORT` env var (Cloud Run). Key files:
 - `App.tsx` — State machine managing view transitions, SSE subscriptions. Two content modes: `video` (ok.ru) and `text` (lib.ru). Subscription loading gate + paywall gate between login and main app.
 - `src/services/api.ts` — API client with SSE + polling fallback. Exports `getUsage()`, `deleteAccount()`, `loadDemo()`, `getSubscription()`, `createCheckoutSession()`, `createPortalSession()`.
 - `src/types/index.ts` — Shared types: `WordTimestamp`, `Transcript`, `VideoChunk`, `SessionResponse`, `ProgressState`, `SRSCard`
-- `src/legal.ts` — `TERMS_OF_SERVICE` and `PRIVACY_POLICY` string constants, used in both `SettingsPanel` and `LoginScreen`
+- `src/legal.ts` — `TERMS_OF_SERVICE` and `PRIVACY_POLICY` string constants, used in both `SettingsPanel` and `LandingPage`
 - `src/hooks/useSubscription.ts` — Fetches subscription status, provides subscribe/manage callbacks. E2E bypass via `window.__E2E_SUBSCRIPTION` override.
 - `src/components/PaywallScreen.tsx` — Shown when trial expired or subscription canceled. Subscribe button redirects to Stripe Checkout.
 - `src/components/SettingsPanel.tsx` — Accepts `cards`, `userId`, `onDeleteAccount`, `subscription`, `onManageSubscription`, `onSubscribe` props. Features: frequency range config, deck export, subscription status display (trial countdown, manage button), API usage bars, collapsible legal docs, account deletion.
-- `src/components/LoginScreen.tsx` — Google Sign-In button with expandable ToS/Privacy agreement text
+- `src/components/LandingPage.tsx` — Public marketing page with hero, features grid, pricing, and "Get Started" CTA that triggers Google Sign-In. Expandable ToS/Privacy in footer.
 
 ### SRS Flashcard System
 

@@ -9,7 +9,7 @@ import { ChunkMenu } from './components/ChunkMenu';
 import { ProgressBar } from './components/ProgressBar';
 import { DeckBadge } from './components/DeckBadge';
 import { ReviewPanel } from './components/ReviewPanel';
-import { LoginScreen } from './components/LoginScreen';
+import { LandingPage } from './components/LandingPage';
 import { PaywallScreen } from './components/PaywallScreen';
 import { useDeck } from './hooks/useDeck';
 import { useAuth } from './hooks/useAuth';
@@ -725,7 +725,7 @@ function App() {
   // Login gate — must sign in before using the app
   if (!userId) {
     return (
-      <LoginScreen
+      <LandingPage
         onSignIn={() => {
           setAuthError(null);
           signInWithGoogle().catch((err) => {

@@ -11,8 +11,8 @@ sequenceDiagram
 
     User->>App: Opens app
     App->>App: onAuthStateChanged(null)
-    App->>User: Show LoginScreen
-    User->>App: Click "Sign in with Google"
+    App->>User: Show LandingPage
+    User->>App: Click "Get Started"
     App->>Firebase: signInWithPopup(GoogleAuthProvider)
     Firebase-->>App: User credential (uid, email, displayName, photoURL)
     App->>App: getIdToken()

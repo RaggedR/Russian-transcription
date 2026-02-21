@@ -78,8 +78,8 @@ test.describe('Paywall — expired trial', () => {
     // Click sign out
     await page.getByTestId('paywall-sign-out').click();
 
-    // Should go back to login screen
-    await expect(page.locator('text=Sign in with Google')).toBeVisible({ timeout: 5000 });
+    // Should go back to landing page
+    await expect(page.getByTestId('get-started-btn')).toBeVisible({ timeout: 5000 });
   });
 });
 
