@@ -67,20 +67,21 @@ function useSubscriptionReal(userId: string | null): SubscriptionState {
  * E2E test bypass — returns active subscription by default.
  * Tests can override via window.__E2E_SUBSCRIPTION to test paywall flow.
  */
+const E2E_DEFAULT_SUBSCRIPTION: SubscriptionData = {
+  status: 'active' as const,
+  trialEnd: null,
+  trialDaysRemaining: 0,
+  currentPeriodEnd: '2099-12-31T00:00:00.000Z',
+  stripeCustomerId: 'cus_e2e_test',
+  stripeSubscriptionId: 'sub_e2e_test',
+  needsPayment: false,
+  price: 5,
+  priceDisplay: '$5/month',
+};
+
 function useSubscriptionE2E(userId: string | null): SubscriptionState {
   const override = typeof window !== 'undefined' && (window as any).__E2E_SUBSCRIPTION;
-
-  const subscription: SubscriptionData = override || {
-    status: 'active' as const,
-    trialEnd: null,
-    trialDaysRemaining: 0,
-    currentPeriodEnd: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
-    stripeCustomerId: 'cus_e2e_test',
-    stripeSubscriptionId: 'sub_e2e_test',
-    needsPayment: false,
-    price: 5,
-    priceDisplay: '$5/month',
-  };
+  const subscription: SubscriptionData = override || E2E_DEFAULT_SUBSCRIPTION;
 
   return {
     subscription: userId ? subscription : null,
