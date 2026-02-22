@@ -62,12 +62,10 @@ test.describe('Browser history (back/forward buttons)', () => {
     await page.goBack();
     await expect(page.locator('text=Part 1')).toBeVisible({ timeout: 5000 });
 
-    // Forward should return to player
+    // Forward should return to player or redirect to input (if route guard fires)
     await page.goForward();
-    // Route guard will redirect to / since session data is cleared on back navigation
-    // OR the player view reappears if data is still in memory
-    // Either way, the page should be in a valid state
-    await expect(page.locator('body')).toBeVisible();
+    const playerOrInput = page.locator('text=Привет,').or(page.locator('input[placeholder*="ok.ru"]'));
+    await expect(playerOrInput.first()).toBeVisible({ timeout: 5000 });
   });
 
   test('back after reset lands at input', async ({ page }) => {

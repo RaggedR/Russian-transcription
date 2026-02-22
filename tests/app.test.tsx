@@ -385,9 +385,7 @@ describe('App', () => {
         signOut: mockSignOut,
       });
 
-      const { container } = render(
-        <MemoryRouter><App /></MemoryRouter>
-      );
+      const { container } = renderApp();
       expect(container.querySelector('img[src="https://photo.url/me.jpg"]')).not.toBeNull();
     });
   });
@@ -925,9 +923,7 @@ describe('App', () => {
     it('cleans up SSE subscription on unmount', async () => {
       mockedApiRequest.mockResolvedValue({ sessionId: 'session-1', status: 'started' });
 
-      const { unmount } = render(
-        <MemoryRouter><App /></MemoryRouter>
-      );
+      const { unmount } = renderApp();
       await act(async () => {
         fireEvent.click(screen.getByTestId('submit-video'));
       });

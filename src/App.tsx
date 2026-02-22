@@ -730,7 +730,7 @@ function App() {
     // Don't delete session - keep it cached for 7 days in case user wants to re-watch
     // GCS lifecycle policy handles cleanup of old sessions automatically
 
-    navigate('/');
+    navigate('/', { replace: true });
     setContentType('video');
     contentTypeRef.current = 'video';
     setSessionId(null);
@@ -954,7 +954,9 @@ function App() {
           </div>
         )}
 
-        {/* Chunk menu view */}
+        {/* Chunk menu view
+            Note: player state (videoUrl, transcript, etc.) may still be set here —
+            handleBackToChunks intentionally keeps it to avoid a route guard race. */}
         {view === 'chunk-menu' && sessionChunks.length > 0 && (
           <div className="space-y-6">
             {error && (

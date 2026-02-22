@@ -39,6 +39,10 @@ Each former `setView()` call maps to either `navigate()` (URL change) or `setTra
 
 Error fallbacks use `replace: true` to avoid polluting the history stack.
 
+### Deployment: SPA Catch-All
+
+In production, the Express server's catch-all route (`server/index.js:2007-2009`) serves `index.html` for all non-API paths (`/chunks`, `/player`, etc.). Without this, direct navigation or page refresh on `/chunks` would return a 404. Vite's dev server handles this automatically via its built-in SPA fallback.
+
 ## Resources
 
 - [React Router docs](https://reactrouter.com/)
