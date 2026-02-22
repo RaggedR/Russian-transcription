@@ -2,8 +2,6 @@
  * Google Cloud Storage primitives.
  * Owns bucket reference and IS_LOCAL state. All other storage modules import from here.
  */
-import fs from 'fs';
-
 // Initialized by init() from index.js
 let bucket = null;
 let IS_LOCAL = true;
