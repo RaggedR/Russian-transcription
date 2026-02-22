@@ -153,9 +153,21 @@ SSE for progress updates has a special setup to avoid Vite proxy buffering in de
 
 Express.js on port 3001 (local) / `PORT` env var (Cloud Run). Key files:
 - `index.js` — Routing, analysis pipeline orchestration, chunk prefetching, demo endpoint, ownership middleware
-- `session-store.js` — Session CRUD, LRU cache (50 sessions), URL session cache (6h TTL per-user), GCS persistence, signed URL generation, extraction cache (2h TTL)
+- `media.js` — Barrel re-export from `server/media/` sub-modules (Facade pattern). Consumers import from here.
+- `media/text-utils.js` — Pure functions: `stripPunctuation`, `editDistance`, `isFuzzyMatch`, `estimateWordTimestamps`, `alignWhisperToOriginal`
+- `media/progress-utils.js` — Constants (`BROWSER_UA`, `ESTIMATED_EXTRACTION_TIME`, `YTDLP_TIMEOUT_MS`) and helpers (`mapProgress`, `computeRanges`, `createHeartbeat`)
+- `media/download.js` — yt-dlp/ffmpeg: `getOkRuVideoInfo`, `downloadAudioChunk`, `downloadVideoChunk`, `getAudioDuration`
+- `media/transcription.js` — Whisper + GPT-4o: `transcribeAudioChunk`, `addPunctuation`, `lemmatizeWords`
+- `media/text-extraction.js` — lib.ru: `isLibRuUrl`, `fetchLibRuText`
+- `media/tts.js` — OpenAI TTS + alignment: `generateTtsAudio`, `transcribeAndAlignTTS`
+- `session-store.js` — Barrel re-export from `server/storage/` sub-modules (Repository pattern). Wraps `getCachedSession` to break circular dependency.
+- `storage/gcs.js` — GCS primitives: `init()`, `getSignedMediaUrl()`, `deleteGcsFile()`, bucket/IS_LOCAL state
+- `storage/url-utils.js` — Pure functions: `extractVideoId`, `normalizeUrl`
+- `storage/url-cache.js` — URL→session mapping (6h TTL, per-user): `getCachedSession`, `cacheSessionUrl`
+- `storage/extraction-cache.js` — yt-dlp info cache in GCS (2h TTL): `getCachedExtraction`, `cacheExtraction`
+- `storage/translation-cache.js` — Translation LRU cache (max 10K entries)
+- `storage/session-repository.js` — Session CRUD, LRU memory cache (50), GCS persistence, cleanup, URL cache rebuild
 - `progress.js` — SSE client management (`progressClients` Map), `sendProgress()`/`createProgressCallback()` helpers, terminal progress rendering
-- `media.js` — External tool integration (yt-dlp, Whisper, GPT-4o, Google Translate, TTS)
 - `chunking.js` — Splits transcripts at natural pauses (>0.5s gaps), targets ~3min chunks
 - `auth.js` — Firebase Admin SDK token verification middleware (`requireAuth`)
 - `usage.js` — Per-user API cost tracking with daily/weekly/monthly limits
@@ -198,11 +210,11 @@ Express.js on port 3001 (local) / `PORT` env var (Cloud Run). Key files:
 - `/api/translate` rejects words >200 chars; `/api/extract-sentence` rejects words >200 or text >5000 chars
 - SSRF protection on video proxy: blocks private IPs, localhost, GCP metadata endpoint
 
-**Key patterns in `media.js`:**
-- `addPunctuation()` uses a two-pointer algorithm to align GPT-4o's punctuated output back to original Whisper word timestamps
-- `createHeartbeat()` sends periodic SSE updates during long-running operations (extraction, download, transcription)
-- `transcribeAndAlignTTS()` runs Whisper on TTS audio then aligns back to original text via `alignWhisperToOriginal()` — produces accurate word timestamps for text mode
-- `estimateWordTimestamps()` generates synthetic timestamps by character length distribution (legacy fallback)
+**Key patterns in media sub-modules:**
+- `addPunctuation()` (`media/transcription.js`) uses a two-pointer algorithm to align GPT-4o's punctuated output back to original Whisper word timestamps
+- `createHeartbeat()` (`media/progress-utils.js`) sends periodic SSE updates during long-running operations (extraction, download, transcription)
+- `transcribeAndAlignTTS()` (`media/tts.js`) runs Whisper on TTS audio then aligns back to original text via `alignWhisperToOriginal()` — produces accurate word timestamps for text mode
+- `estimateWordTimestamps()` (`media/text-utils.js`) generates synthetic timestamps by character length distribution (legacy fallback)
 
 **API Endpoints:**
 

@@ -246,6 +246,86 @@ flowchart LR
     TBudget -->|429 if exceeded| Handler
 ```
 
+## 8. Backend Module Structure
+
+The backend is organized into two module groups behind barrel re-exports. Consumers (`index.js`, tests, scripts) import from the barrel files — never from sub-modules directly.
+
+```
+server/
+├── index.js                  ← Route handlers, pipeline orchestration
+├── media.js                  ← Barrel: re-exports from server/media/
+├── media/
+│   ├── text-utils.js         ← Pure functions: stripPunctuation, editDistance,
+│   │                            isFuzzyMatch, estimateWordTimestamps, alignWhisperToOriginal
+│   ├── progress-utils.js     ← Heartbeat, mapProgress, computeRanges, constants
+│   ├── download.js           ← yt-dlp/ffmpeg: getOkRuVideoInfo, downloadAudioChunk,
+│   │                            downloadVideoChunk, getAudioDuration
+│   ├── transcription.js      ← Whisper + GPT-4o: transcribeAudioChunk,
+│   │                            addPunctuation, lemmatizeWords
+│   ├── text-extraction.js    ← lib.ru: isLibRuUrl, fetchLibRuText
+│   └── tts.js                ← OpenAI TTS: generateTtsAudio, transcribeAndAlignTTS
+│
+├── session-store.js          ← Barrel: re-exports from server/storage/
+├── storage/
+│   ├── gcs.js                ← GCS init, getSignedMediaUrl, deleteGcsFile
+│   ├── url-utils.js          ← Pure functions: extractVideoId, normalizeUrl
+│   ├── url-cache.js          ← URL→session mapping (6h TTL, per-user)
+│   ├── extraction-cache.js   ← yt-dlp info cache in GCS (2h TTL)
+│   ├── translation-cache.js  ← Translation LRU cache (max 10K entries)
+│   └── session-repository.js ← Session CRUD, LRU memory cache (50),
+│                                GCS persistence, cleanup, URL cache rebuild
+│
+├── progress.js               ← SSE client management
+├── chunking.js               ← Transcript splitting at natural pauses
+├── auth.js                   ← Firebase token verification
+├── usage.js                  ← Per-user API cost tracking
+├── stripe.js                 ← Subscription management
+└── dictionary.js             ← OpenRussian dictionary service
+```
+
+### Module dependency graph
+
+```mermaid
+graph TD
+    index[index.js] --> media_barrel[media.js barrel]
+    index --> store_barrel[session-store.js barrel]
+    index --> progress[progress.js]
+    index --> chunking[chunking.js]
+    index --> auth[auth.js]
+    index --> usage[usage.js]
+    index --> stripe[stripe.js]
+    index --> dictionary[dictionary.js]
+
+    media_barrel --> text_utils[media/text-utils.js]
+    media_barrel --> progress_utils[media/progress-utils.js]
+    media_barrel --> download[media/download.js]
+    media_barrel --> transcription[media/transcription.js]
+    media_barrel --> text_extraction[media/text-extraction.js]
+    media_barrel --> tts[media/tts.js]
+
+    download --> progress_utils
+    download --> chunking
+    transcription --> text_utils
+    transcription --> progress_utils
+    text_extraction --> progress_utils
+    tts --> progress_utils
+    tts --> transcription
+    tts --> text_utils
+
+    store_barrel --> gcs[storage/gcs.js]
+    store_barrel --> url_utils[storage/url-utils.js]
+    store_barrel --> url_cache[storage/url-cache.js]
+    store_barrel --> extraction_cache[storage/extraction-cache.js]
+    store_barrel --> translation_cache[storage/translation-cache.js]
+    store_barrel --> session_repo[storage/session-repository.js]
+
+    url_cache --> url_utils
+    extraction_cache --> url_utils
+    extraction_cache --> gcs
+    session_repo --> gcs
+    session_repo --> url_cache
+```
+
 ## Infrastructure
 
 ```
