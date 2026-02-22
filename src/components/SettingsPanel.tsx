@@ -15,6 +15,7 @@ interface SettingsPanelProps {
   subscription: SubscriptionData | null;
   onManageSubscription: () => Promise<void>;
   onSubscribe: () => Promise<void>;
+  onRefreshTranslations: () => Promise<void>;
 }
 
 function UsageBar({ label, used, limit }: { label: string; used: number; limit: number }) {
@@ -44,6 +45,7 @@ export function SettingsPanel({
   subscription,
   onManageSubscription,
   onSubscribe,
+  onRefreshTranslations,
 }: SettingsPanelProps) {
   const [expandedLegal, setExpandedLegal] = useState<'tos' | 'privacy' | null>(null);
   const [usage, setUsage] = useState<UsageData | null>(null);
@@ -51,6 +53,8 @@ export function SettingsPanel({
   const [deleteConfirm, setDeleteConfirm] = useState('');
   const [isDeleting, setIsDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [refreshResult, setRefreshResult] = useState<string | null>(null);
 
   // Fetch usage when panel opens
   useEffect(() => {
@@ -84,6 +88,19 @@ export function SettingsPanel({
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
   }, [cards]);
+
+  const handleRefreshTranslations = useCallback(async () => {
+    setIsRefreshing(true);
+    setRefreshResult(null);
+    try {
+      await onRefreshTranslations();
+      setRefreshResult('Translations refreshed');
+    } catch {
+      setRefreshResult('Failed to refresh translations');
+    } finally {
+      setIsRefreshing(false);
+    }
+  }, [onRefreshTranslations]);
 
   const handleDeleteAccount = useCallback(async () => {
     setIsDeleting(true);
@@ -130,7 +147,7 @@ export function SettingsPanel({
             <input
               type="number"
               min={1}
-              max={12252}
+              max={12244}
               value={config.freqRangeMin ?? ''}
               onChange={(e) => onConfigChange({
                 ...config,
@@ -143,7 +160,7 @@ export function SettingsPanel({
             <input
               type="number"
               min={1}
-              max={12252}
+              max={12244}
               value={config.freqRangeMax ?? ''}
               onChange={(e) => onConfigChange({
                 ...config,
@@ -169,6 +186,19 @@ export function SettingsPanel({
           >
             {cards.length === 0 ? 'No cards to export' : `Export ${cards.length} cards`}
           </button>
+          <button
+            onClick={handleRefreshTranslations}
+            disabled={cards.length === 0 || isRefreshing}
+            data-testid="refresh-translations-btn"
+            className="w-full px-4 py-2 text-sm font-medium rounded-md border border-gray-300 bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors mt-2"
+          >
+            {isRefreshing ? 'Refreshing...' : 'Refresh translations'}
+          </button>
+          {refreshResult && (
+            <p className={`text-xs mt-1 ${refreshResult.includes('Failed') ? 'text-red-600' : 'text-green-600'}`}>
+              {refreshResult}
+            </p>
+          )}
         </div>
 
         {/* Subscription */}
