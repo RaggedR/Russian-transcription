@@ -63,7 +63,7 @@ const RATINGS: { rating: SRSRating; label: string; color: string }[] = [
 function cardToDictionaryEntry(card: SRSCard): DictionaryEntry {
   const sides = getCardSides(card);
   if (card.dictionary) {
-    return card.dictionary;
+    return { ...card.dictionary };
   }
   return {
     stressedForm: sides.russian,

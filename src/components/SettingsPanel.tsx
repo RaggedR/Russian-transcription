@@ -130,7 +130,7 @@ export function SettingsPanel({
             <input
               type="number"
               min={1}
-              max={12252}
+              max={12244}
               value={config.freqRangeMin ?? ''}
               onChange={(e) => onConfigChange({
                 ...config,
@@ -143,7 +143,7 @@ export function SettingsPanel({
             <input
               type="number"
               min={1}
-              max={12252}
+              max={12244}
               value={config.freqRangeMax ?? ''}
               onChange={(e) => onConfigChange({
                 ...config,
