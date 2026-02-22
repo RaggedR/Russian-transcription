@@ -72,7 +72,6 @@ function cardToDictionaryEntry(card: SRSCard): DictionaryEntry {
   };
 }
 
-
 function CardContent({ card, showAnswer, reviewedCount, queueLength, onShowAnswer, onRate, onRemove }: {
   card: SRSCard;
   showAnswer: boolean;

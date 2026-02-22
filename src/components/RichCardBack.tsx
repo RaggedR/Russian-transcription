@@ -14,8 +14,6 @@ const SAMPLE_ENTRIES: DictionaryEntry[] = [
       pl: { nom: 'времена́', gen: 'времён', dat: 'времена́м', acc: 'времена́', inst: 'времена́ми', prep: 'времена́х' },
     },
     example: { russian: 'У меня нет вре́мени.', english: "I don't have time." },
-    context: 'Он провёл много времени в деревне.',
-    contextTranslation: 'He spent a lot of time in the village.',
   },
   {
     stressedForm: 'говори́ть',
@@ -29,8 +27,6 @@ const SAMPLE_ENTRIES: DictionaryEntry[] = [
       imperative: { sg: 'говори́', pl: 'говори́те' },
     },
     example: { russian: 'Она говори́т по-ру́сски.', english: 'She speaks Russian.' },
-    context: 'Он говорил медленно и тихо.',
-    contextTranslation: 'He spoke slowly and quietly.',
   },
   {
     stressedForm: 'краси́вый',
@@ -43,8 +39,6 @@ const SAMPLE_ENTRIES: DictionaryEntry[] = [
       superlative: 'краси́вейший',
     },
     example: { russian: 'Какой краси́вый го́род!', english: 'What a beautiful city!' },
-    context: 'Это была красивая старая церковь.',
-    contextTranslation: 'It was a beautiful old church.',
   },
 ];
 
@@ -267,16 +261,6 @@ export function RichCardBack({ entry }: { entry: DictionaryEntry }) {
         </div>
       )}
 
-      {/* Context sentence (from transcript) */}
-      {entry.context && (
-        <div className="bg-gray-50 rounded-lg px-3 py-2">
-          <p className="text-xs text-gray-400 font-medium uppercase tracking-wide mb-1">From transcript</p>
-          <p className="text-sm text-gray-800 italic">{entry.context}</p>
-          {entry.contextTranslation && (
-            <p className="text-sm text-gray-500">{entry.contextTranslation}</p>
-          )}
-        </div>
-      )}
     </div>
   );
 }
