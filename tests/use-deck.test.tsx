@@ -636,7 +636,7 @@ describe('useDeck', () => {
     ];
     mockGetDoc.mockResolvedValue(firestoreSnap({ cards: firestoreCards }));
 
-    const { result } = renderHook(() => useDeck('user-skip-examples'));
+    renderHook(() => useDeck('user-skip-examples'));
 
     await act(async () => {
       await new Promise(r => setTimeout(r, 200));
@@ -716,9 +716,7 @@ describe('useDeck', () => {
 
     // First call: enrich-deck returns dictionary
     // Second call: generate-examples returns example
-    let callCount = 0;
     mockApiRequest.mockImplementation((url: string) => {
-      callCount++;
       if (url.includes('enrich-deck')) {
         return Promise.resolve({ entries: { 'Привет': dictionaryEntry } });
       }
