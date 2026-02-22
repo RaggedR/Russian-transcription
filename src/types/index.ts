@@ -29,8 +29,6 @@ export interface DictionaryEntry {
   conjugation?: VerbConjugation;
   adjectiveForms?: AdjectiveForms;
   example?: { russian: string; english: string };
-  context?: string;
-  contextTranslation?: string;
 }
 
 // ── API response types ───────────────────────────────────────────────
