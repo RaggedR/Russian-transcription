@@ -38,8 +38,6 @@ function getCardSides(card: SRSCard) {
   return {
     russian: wordIsCyrillic ? card.word : card.translation,
     english: wordIsCyrillic ? card.translation : card.word,
-    russianSentence: wordIsCyrillic ? card.context : card.contextTranslation,
-    englishSentence: wordIsCyrillic ? card.contextTranslation : card.context,
   };
 }
 
@@ -65,18 +63,12 @@ const RATINGS: { rating: SRSRating; label: string; color: string }[] = [
 function cardToDictionaryEntry(card: SRSCard): DictionaryEntry {
   const sides = getCardSides(card);
   if (card.dictionary) {
-    return {
-      ...card.dictionary,
-      context: sides.russianSentence,
-      contextTranslation: sides.englishSentence,
-    };
+    return { ...card.dictionary };
   }
   return {
     stressedForm: sides.russian,
     pos: '',
     translations: [sides.english],
-    context: sides.russianSentence,
-    contextTranslation: sides.englishSentence,
   };
 }
 

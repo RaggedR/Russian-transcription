@@ -6,14 +6,12 @@ export function normalizeCardId(word: string): string {
   return word.toLowerCase().replace(/[^а-яёа-яё]/g, '').replace(/ё/g, 'е');
 }
 
-export function createCard(word: string, translation: string, sourceLanguage: string, context?: string, contextTranslation?: string, dictionary?: DictionaryEntry): SRSCard {
+export function createCard(word: string, translation: string, sourceLanguage: string, dictionary?: DictionaryEntry): SRSCard {
   return {
     id: normalizeCardId(word),
     word,
     translation,
     sourceLanguage,
-    context,
-    contextTranslation,
     dictionary,
     easeFactor: 2.5,
     interval: 0,

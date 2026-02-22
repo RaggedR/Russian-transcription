@@ -104,14 +104,20 @@ async function setupTextModeRoutes(page: any, options: { chunks?: number; cached
     })
   );
 
-  // Extract sentence route
-  await page.route('**/api/extract-sentence', (route: any) =>
+  // Generate examples route
+  await page.route('**/api/generate-examples', (route: any) => {
+    const body = route.request().postDataJSON();
+    const words: string[] = body?.words || [];
+    const examples: Record<string, { russian: string; english: string }> = {};
+    for (const word of words) {
+      examples[word] = { russian: 'Привет, как дела?', english: 'Hello, how are you?' };
+    }
     route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify({ sentence: 'Привет, как дела?', translation: 'Hello, how are you?' }),
-    })
-  );
+      body: JSON.stringify({ examples }),
+    });
+  });
 
   // SSE progress (immediate complete for cached)
   await page.route('**/api/progress/**', (route: any) => {

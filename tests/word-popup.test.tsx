@@ -6,8 +6,7 @@ import type { Translation } from '../src/types';
 // Mock the API module
 vi.mock('../src/services/api', () => ({
   apiRequest: vi.fn().mockResolvedValue({
-    sentence: 'Привет, как дела?',
-    translation: 'Hello, how are you?',
+    examples: { 'привет': { russian: 'Привет, как дела?', english: 'Hello, how are you?' } },
   }),
 }));
 
@@ -15,6 +14,11 @@ const MOCK_TRANSLATION: Translation = {
   word: 'привет',
   translation: 'hello',
   sourceLanguage: 'ru',
+  dictionary: {
+    stressedForm: 'приве́т',
+    pos: 'other',
+    translations: ['hello', 'hi'],
+  },
 };
 
 const DEFAULT_POSITION = { x: 100, y: 200 };
@@ -29,7 +33,6 @@ function renderPopup(overrides: Partial<Parameters<typeof WordPopup>[0]> = {}) {
       onClose={overrides.onClose ?? vi.fn()}
       onAddToDeck={overrides.onAddToDeck}
       isInDeck={overrides.isInDeck}
-      context={overrides.context}
     />
   );
 }
@@ -112,14 +115,10 @@ describe('WordPopup', () => {
     expect(screen.queryByText('In deck')).not.toBeInTheDocument();
   });
 
-  it('clicking "Add to deck" calls extract-sentence then onAddToDeck with sentence', async () => {
+  it('calls generate-examples then onAddToDeck with enriched dictionary', async () => {
     const { apiRequest } = await import('../src/services/api');
     const onAddToDeck = vi.fn();
-    renderPopup({
-      onAddToDeck,
-      isInDeck: false,
-      context: 'Привет, как дела? Я хочу рассказать.',
-    });
+    renderPopup({ onAddToDeck, isInDeck: false });
 
     fireEvent.click(screen.getByText('Add to deck'));
 
@@ -128,53 +127,60 @@ describe('WordPopup', () => {
         'привет',
         'hello',
         'ru',
-        'Привет, как дела?',        // extracted sentence
-        'Hello, how are you?',       // context translation
-        undefined,                   // dictionary (not in mock)
+        expect.objectContaining({
+          stressedForm: 'приве́т',
+          example: { russian: 'Привет, как дела?', english: 'Hello, how are you?' },
+        }),
       );
     });
 
-    expect(apiRequest).toHaveBeenCalledWith('/api/extract-sentence', {
+    expect(apiRequest).toHaveBeenCalledWith('/api/generate-examples', {
       method: 'POST',
-      body: JSON.stringify({ text: 'Привет, как дела? Я хочу рассказать.', word: 'привет' }),
+      body: JSON.stringify({ words: ['привет'] }),
     });
   });
 
-  it('still calls onAddToDeck without sentence if extract-sentence fails', async () => {
+  it('still calls onAddToDeck without example if generate-examples fails', async () => {
     const { apiRequest } = await import('../src/services/api');
     (apiRequest as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('API down'));
 
     const onAddToDeck = vi.fn();
-    renderPopup({
-      onAddToDeck,
-      isInDeck: false,
-      context: 'Some context here.',
-    });
+    renderPopup({ onAddToDeck, isInDeck: false });
 
     fireEvent.click(screen.getByText('Add to deck'));
 
     await waitFor(() => {
-      // Should fall back to calling without sentence/contextTranslation
-      expect(onAddToDeck).toHaveBeenCalledWith('привет', 'hello', 'ru', undefined, undefined, undefined);
+      // Should fall back to calling with original dictionary (no example)
+      expect(onAddToDeck).toHaveBeenCalledWith(
+        'привет',
+        'hello',
+        'ru',
+        MOCK_TRANSLATION.dictionary,
+      );
     });
   });
 
-  it('skips extract-sentence call when no context provided', async () => {
+  it('skips generate-examples call when no dictionary data', async () => {
     const { apiRequest } = await import('../src/services/api');
+    const noDictTranslation: Translation = {
+      word: 'привет',
+      translation: 'hello',
+      sourceLanguage: 'ru',
+    };
     const onAddToDeck = vi.fn();
     renderPopup({
       onAddToDeck,
       isInDeck: false,
-      // no context prop
+      translation: noDictTranslation,
     });
 
     fireEvent.click(screen.getByText('Add to deck'));
 
     await waitFor(() => {
-      expect(onAddToDeck).toHaveBeenCalledWith('привет', 'hello', 'ru', undefined, undefined, undefined);
+      expect(onAddToDeck).toHaveBeenCalledWith('привет', 'hello', 'ru', undefined);
     });
 
-    // extract-sentence should NOT be called
+    // generate-examples should NOT be called
     expect(apiRequest).not.toHaveBeenCalled();
   });
 });
