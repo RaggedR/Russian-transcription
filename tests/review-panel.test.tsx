@@ -75,7 +75,7 @@ describe('ReviewPanel flashcard direction', () => {
     expect(getBackTranslation(container)).toBe('hello');
   });
 
-  it('shows context sentences on the back after clicking Show Answer (swapped fields)', () => {
+  it('does not show transcript context on the card back (removed feature)', () => {
     const card = makeCard({
       word: 'hello',
       translation: 'привет',
@@ -84,33 +84,10 @@ describe('ReviewPanel flashcard direction', () => {
     });
     const { container } = render(<ReviewPanel {...defaultProps} dueCards={[card]} />);
 
-    // Sentences NOT visible before reveal (RichCardBack only renders on back)
-    expect(container.textContent).not.toContain('Скажи привет');
-    expect(container.textContent).not.toContain('Say hello');
-
     fireEvent.click(screen.getByText('Show Answer'));
 
-    // Both sentences visible after reveal via RichCardBack
-    expect(container.textContent).toContain('Скажи привет');
-    expect(container.textContent).toContain('Say hello');
-  });
-
-  it('shows context sentences on the back after clicking Show Answer (normal fields)', () => {
-    const card = makeCard({
-      word: 'привет',
-      translation: 'hello',
-      context: 'Скажи привет всем.',
-      contextTranslation: 'Say hello to everyone.',
-    });
-    const { container } = render(<ReviewPanel {...defaultProps} dueCards={[card]} />);
-
-    // Sentences NOT visible before reveal
-    expect(container.textContent).not.toContain('Say hello');
-
-    fireEvent.click(screen.getByText('Show Answer'));
-
-    // Both sentences visible after reveal via RichCardBack
-    expect(container.textContent).toContain('Скажи привет');
-    expect(container.textContent).toContain('Say hello');
+    // Transcript context should NOT appear — only dictionary example sentences are shown
+    expect(container.textContent).not.toContain('Say hello to everyone');
+    expect(container.textContent).not.toContain('Скажи привет всем');
   });
 });

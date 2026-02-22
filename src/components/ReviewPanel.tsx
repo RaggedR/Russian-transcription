@@ -65,18 +65,12 @@ const RATINGS: { rating: SRSRating; label: string; color: string }[] = [
 function cardToDictionaryEntry(card: SRSCard): DictionaryEntry {
   const sides = getCardSides(card);
   if (card.dictionary) {
-    return {
-      ...card.dictionary,
-      context: sides.russianSentence,
-      contextTranslation: sides.englishSentence,
-    };
+    return { ...card.dictionary };
   }
   return {
     stressedForm: sides.russian,
     pos: '',
     translations: [sides.english],
-    context: sides.russianSentence,
-    contextTranslation: sides.englishSentence,
   };
 }
 
