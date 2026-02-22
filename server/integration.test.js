@@ -2018,6 +2018,26 @@ describe('U. POST /api/enrich-deck', () => {
     expect(body.error).toMatch(/too many/i);
   });
 
+  it('skips entries with missing word key', async () => {
+    lookupWord.mockReturnValue({ stressedForm: 'кни́га', pos: 'noun', translations: ['book'] });
+
+    const res = await fetch(`${baseUrl}/api/enrich-deck`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        words: [
+          { word: 'книга' },
+          { lemma: 'only-lemma' },  // missing word key
+          {},                        // empty object
+        ],
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    // Only 'книга' should be in entries — the others are skipped
+    expect(Object.keys(body.entries)).toEqual(['книга']);
+  });
+
   it('handles empty words array gracefully', async () => {
     const res = await fetch(`${baseUrl}/api/enrich-deck`, {
       method: 'POST',

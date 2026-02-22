@@ -443,6 +443,7 @@ app.post('/api/enrich-deck', (req, res) => {
 
   const entries = {};
   for (const { word, lemma } of words) {
+    if (!word) continue;
     entries[word] = lookupWord(word, lemma) || null;
   }
   res.json({ entries });
