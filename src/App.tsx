@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react';
+import { useState, useEffect, useCallback, useRef, lazy, Suspense, useMemo } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { VideoInput } from './components/VideoInput';
 import { TextInput } from './components/TextInput';
 import { ChunkMenu } from './components/ChunkMenu';
@@ -132,8 +133,21 @@ function ErrorMessage({ text }: { text: string }) {
 }
 
 function App() {
-  // View state machine
-  const [view, setView] = useState<AppView>('input');
+  const location = useLocation();
+  const navigate = useNavigate();
+
+  // Transient loading overlays (don't change the URL)
+  const [transientView, setTransientView] = useState<'analyzing' | 'loading-chunk' | null>(null);
+
+  // Derive the effective view from the URL + any transient overlay
+  const view: AppView = useMemo(() => {
+    if (transientView) return transientView;
+    switch (location.pathname) {
+      case '/chunks': return 'chunk-menu';
+      case '/player': return 'player';
+      default: return 'input';
+    }
+  }, [transientView, location.pathname]);
 
   // Session reference (backend owns the state)
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -220,6 +234,21 @@ function App() {
       });
   }, []);
 
+  // Clear transient overlays when URL changes (e.g., browser back/forward)
+  useEffect(() => {
+    setTransientView(null);
+  }, [location.pathname]);
+
+  // Route guards: redirect if navigating to a view without required data
+  useEffect(() => {
+    if (location.pathname === '/chunks' && !sessionId && sessionChunks.length === 0) {
+      navigate('/', { replace: true });
+    }
+    if (location.pathname === '/player' && !transcript && !videoUrl && !audioUrl) {
+      navigate('/', { replace: true });
+    }
+  }, [location.pathname, sessionId, sessionChunks.length, transcript, videoUrl, audioUrl, navigate]);
+
   // Cleanup SSE subscription on unmount
   useEffect(() => {
     return () => {
@@ -239,12 +268,12 @@ function App() {
       setVideoTitle(data.title);
       setCurrentTime(0);
       setCurrentChunkIndex(chunk.index);
-      setView('player');
+      navigate('/player');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load chunk');
-      setView('chunk-menu');
+      navigate('/chunks', { replace: true });
     }
-  }, []);
+  }, [navigate]);
 
   // Shared: after a chunk finishes downloading, update state and show player
   const finishChunkDownload = useCallback((chunk: VideoChunk, data: { videoUrl?: string; audioUrl?: string; transcript: any; title: string }) => {
@@ -261,15 +290,16 @@ function App() {
     setVideoTitle(data.title);
     setCurrentTime(0);
     setCurrentChunkIndex(chunk.index);
-    setView('player');
+    navigate('/player');
+    setTransientView(null);
     setProgress([]);
-  }, []);
+  }, [navigate]);
 
   const handleSelectVideoChunk = useCallback(async (chunk: VideoChunk, sessionIdOverride?: string) => {
     const activeSessionId = sessionIdOverride || sessionId;
     if (!activeSessionId) {
       setError('Session expired. Please analyze the video again.');
-      setView('input');
+      navigate('/', { replace: true });
       return;
     }
 
@@ -284,7 +314,7 @@ function App() {
 
     // Download video chunk — progress events: video
     setLoadingChunkIndex(chunk.index);
-    setView('loading-chunk');
+    setTransientView('loading-chunk');
     setError(null);
     setProgress([
       { type: 'video', progress: 0, status: 'active', message: 'Starting download...' },
@@ -305,7 +335,7 @@ function App() {
         () => {},
         (errorMessage) => {
           setError(errorMessage);
-          setView('chunk-menu');
+          setTransientView(null);
           setProgress([]);
         },
         () => resolve()
@@ -319,16 +349,16 @@ function App() {
       finishChunkDownload(chunk, data);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to download chunk');
-      setView('chunk-menu');
+      setTransientView(null);
       setProgress([]);
     }
-  }, [sessionId, loadReadyChunk, finishChunkDownload]);
+  }, [sessionId, loadReadyChunk, finishChunkDownload, navigate]);
 
   const handleSelectTextChunk = useCallback(async (chunk: VideoChunk, sessionIdOverride?: string) => {
     const activeSessionId = sessionIdOverride || sessionId;
     if (!activeSessionId) {
       setError('Session expired. Please load the text again.');
-      setView('input');
+      navigate('/', { replace: true });
       return;
     }
 
@@ -343,7 +373,7 @@ function App() {
 
     // Generate TTS for text chunk — progress events: tts, lemmatization
     setLoadingChunkIndex(chunk.index);
-    setView('loading-chunk');
+    setTransientView('loading-chunk');
     setError(null);
     setProgress([
       { type: 'tts', progress: 0, status: 'active', message: 'Generating audio...' },
@@ -366,7 +396,7 @@ function App() {
         () => {},
         (errorMessage) => {
           setError(errorMessage);
-          setView('chunk-menu');
+          setTransientView(null);
           setProgress([]);
         },
         () => resolve()
@@ -380,10 +410,10 @@ function App() {
       finishChunkDownload(chunk, data);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to generate audio');
-      setView('chunk-menu');
+      setTransientView(null);
       setProgress([]);
     }
-  }, [sessionId, loadReadyChunk, finishChunkDownload]);
+  }, [sessionId, loadReadyChunk, finishChunkDownload, navigate]);
 
   // Dispatch to the right handler based on current content type
   const handleSelectChunk = useCallback((chunk: VideoChunk, sessionIdOverride?: string) => {
@@ -396,7 +426,7 @@ function App() {
   const handleAnalyzeVideo = useCallback(async (url: string) => {
     setContentType('video');
     contentTypeRef.current = 'video';
-    setView('analyzing');
+    setTransientView('analyzing');
     setError(null);
     setOriginalUrl(url);
     setProgress([
@@ -434,7 +464,7 @@ function App() {
         if (chunksWithStatus.length === 1 && !response.hasMoreChunks) {
           setTimeout(() => handleSelectVideoChunk(chunksWithStatus[0], newSessionId), 0);
         } else {
-          setView('chunk-menu');
+          navigate('/chunks');
         }
         return;
       }
@@ -461,27 +491,27 @@ function App() {
           if (chunksWithStatus.length === 1 && !data.hasMoreChunks) {
             setTimeout(() => handleSelectVideoChunk(chunksWithStatus[0], newSessionId), 0);
           } else {
-            setView('chunk-menu');
+            navigate('/chunks');
           }
         },
         (errorMessage) => {
           setError(errorMessage);
-          setView('input');
+          setTransientView(null);
           setProgress([]);
         }
       );
       progressCleanupRef.current = cleanup;
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to analyze video');
-      setView('input');
+      setTransientView(null);
       setProgress([]);
     }
-  }, [handleSelectVideoChunk]);
+  }, [handleSelectVideoChunk, navigate]);
 
   const handleAnalyzeText = useCallback(async (url: string) => {
     setContentType('text');
     contentTypeRef.current = 'text';
-    setView('analyzing');
+    setTransientView('analyzing');
     setError(null);
     setOriginalUrl(url);
     setProgress([
@@ -519,7 +549,7 @@ function App() {
         if (chunksWithStatus.length === 1 && !response.hasMoreChunks) {
           setTimeout(() => handleSelectTextChunk(chunksWithStatus[0], newSessionId), 0);
         } else {
-          setView('chunk-menu');
+          navigate('/chunks');
         }
         return;
       }
@@ -546,24 +576,30 @@ function App() {
           if (chunksWithStatus.length === 1 && !data.hasMoreChunks) {
             setTimeout(() => handleSelectTextChunk(chunksWithStatus[0], newSessionId), 0);
           } else {
-            setView('chunk-menu');
+            navigate('/chunks');
           }
         },
         (errorMessage) => {
           setError(errorMessage);
-          setView('input');
+          setTransientView(null);
           setProgress([]);
         }
       );
       progressCleanupRef.current = cleanup;
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load text');
-      setView('input');
+      setTransientView(null);
       setProgress([]);
     }
-  }, [handleSelectTextChunk]);
+  }, [handleSelectTextChunk, navigate]);
 
   const handleBackToChunks = useCallback(async () => {
+    // Navigate to chunk menu. Don't clear videoUrl/transcript here — the route
+    // guard would see "/player with no data" in an intermediate render and
+    // redirect to "/". The stale player state is harmless (chunk-menu doesn't
+    // render it) and gets overwritten when the user selects a new chunk.
+    navigate('/chunks');
+
     // Refresh session state from backend to get latest chunk statuses
     if (sessionId) {
       try {
@@ -576,15 +612,7 @@ function App() {
         // Ignore errors, use cached chunks
       }
     }
-
-    setVideoUrl(null);
-    setAudioUrl(null);
-    setTranscript(null);
-    setVideoTitle('');
-    setCurrentTime(0);
-
-    setView('chunk-menu');
-  }, [sessionId]);
+  }, [sessionId, navigate]);
 
   const handleLoadMore = useCallback(async () => {
     if (!sessionId || isLoadingMore) return;
@@ -682,15 +710,15 @@ function App() {
         const handler = type === 'text' ? handleSelectTextChunk : handleSelectVideoChunk;
         setTimeout(() => handler(chunksWithStatus[0], newSessionId), 0);
       } else {
-        setView('chunk-menu');
+        navigate('/chunks');
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load demo');
-      setView('input');
+      navigate('/', { replace: true });
     } finally {
       setIsDemoLoading(false);
     }
-  }, [handleSelectVideoChunk, handleSelectTextChunk]);
+  }, [handleSelectVideoChunk, handleSelectTextChunk, navigate]);
 
   const handleReset = useCallback(() => {
     // Clean up SSE subscription
@@ -702,7 +730,7 @@ function App() {
     // Don't delete session - keep it cached for 7 days in case user wants to re-watch
     // GCS lifecycle policy handles cleanup of old sessions automatically
 
-    setView('input');
+    navigate('/', { replace: true });
     setContentType('video');
     contentTypeRef.current = 'video';
     setSessionId(null);
@@ -722,7 +750,7 @@ function App() {
     setLoadingChunkIndex(null);
     setError(null);
     setProgress([]);
-  }, []);
+  }, [navigate]);
 
   // Show LandingPage immediately during auth loading AND when not logged in.
   // No spinner — user sees real content instantly instead of waiting for
@@ -926,7 +954,9 @@ function App() {
           </div>
         )}
 
-        {/* Chunk menu view */}
+        {/* Chunk menu view
+            Note: player state (videoUrl, transcript, etc.) may still be set here —
+            handleBackToChunks intentionally keeps it to avoid a route guard race. */}
         {view === 'chunk-menu' && sessionChunks.length > 0 && (
           <div className="space-y-6">
             {error && (

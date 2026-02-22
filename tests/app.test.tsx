@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 
 // ─── Mock child components (stubs with data-testid) ───────
 
@@ -178,6 +179,15 @@ const mockTranscript = {
   duration: 180,
 };
 
+// ─── Render helper (wraps App in MemoryRouter) ───────────
+
+const renderApp = (initialRoute = '/') =>
+  render(
+    <MemoryRouter initialEntries={[initialRoute]}>
+      <App />
+    </MemoryRouter>
+  );
+
 // ─── Tests ────────────────────────────────────────────────
 
 describe('App', () => {
@@ -254,7 +264,7 @@ describe('App', () => {
         signOut: mockSignOut,
       });
 
-      render(<App />);
+      renderApp();
       expect(screen.getByTestId('landing-page')).toBeInTheDocument();
       expect(screen.queryByTestId('video-input')).toBeNull();
     });
@@ -268,13 +278,13 @@ describe('App', () => {
         signOut: mockSignOut,
       });
 
-      render(<App />);
+      renderApp();
       expect(screen.getByTestId('landing-page')).toBeInTheDocument();
       expect(screen.queryByTestId('video-input')).toBeNull();
     });
 
     it('shows main app when authenticated', () => {
-      render(<App />);
+      renderApp();
       expect(screen.queryByTestId('landing-page')).toBeNull();
       expect(screen.getByTestId('video-input')).toBeInTheDocument();
       expect(screen.getByTestId('text-input')).toBeInTheDocument();
@@ -289,7 +299,7 @@ describe('App', () => {
         signOut: mockSignOut,
       });
 
-      render(<App />);
+      renderApp();
       await act(async () => {
         fireEvent.click(screen.getByTestId('get-started-btn'));
       });
@@ -306,7 +316,7 @@ describe('App', () => {
       });
       mockSignInWithGoogle.mockRejectedValue(new Error('Auth failed'));
 
-      render(<App />);
+      renderApp();
       await act(async () => {
         fireEvent.click(screen.getByTestId('get-started-btn'));
       });
@@ -329,7 +339,7 @@ describe('App', () => {
       (popupError as any).code = 'auth/popup-closed-by-user';
       mockSignInWithGoogle.mockRejectedValue(popupError);
 
-      render(<App />);
+      renderApp();
       await act(async () => {
         fireEvent.click(screen.getByTestId('get-started-btn'));
       });
@@ -347,18 +357,18 @@ describe('App', () => {
 
   describe('Input view', () => {
     it('renders header with app title', () => {
-      render(<App />);
+      renderApp();
       expect(screen.getByText('Russian Video & Text')).toBeInTheDocument();
     });
 
     it('shows deck badge and settings button', () => {
-      render(<App />);
+      renderApp();
       expect(screen.getByTestId('deck-badge')).toBeInTheDocument();
       expect(screen.getByTitle('Settings')).toBeInTheDocument();
     });
 
     it('shows user avatar with sign-out on click', () => {
-      render(<App />);
+      renderApp();
       const avatarBtn = screen.getByTitle(/Signed in as test@test.com/);
       expect(avatarBtn).toBeInTheDocument();
 
@@ -375,7 +385,7 @@ describe('App', () => {
         signOut: mockSignOut,
       });
 
-      const { container } = render(<App />);
+      const { container } = renderApp();
       expect(container.querySelector('img[src="https://photo.url/me.jpg"]')).not.toBeNull();
     });
   });
@@ -386,7 +396,7 @@ describe('App', () => {
     it('transitions to analyzing view on video submit', async () => {
       mockedApiRequest.mockResolvedValue({ sessionId: 'session-1', status: 'started' });
 
-      render(<App />);
+      renderApp();
       await act(async () => {
         fireEvent.click(screen.getByTestId('submit-video'));
       });
@@ -400,7 +410,7 @@ describe('App', () => {
     it('subscribes to SSE after successful analyze API call', async () => {
       mockedApiRequest.mockResolvedValue({ sessionId: 'session-1', status: 'started' });
 
-      render(<App />);
+      renderApp();
       await act(async () => {
         fireEvent.click(screen.getByTestId('submit-video'));
       });
@@ -416,7 +426,7 @@ describe('App', () => {
     it('transitions to chunk-menu on SSE complete with multiple chunks', async () => {
       mockedApiRequest.mockResolvedValue({ sessionId: 'session-1', status: 'started' });
 
-      render(<App />);
+      renderApp();
       await act(async () => {
         fireEvent.click(screen.getByTestId('submit-video'));
       });
@@ -446,7 +456,7 @@ describe('App', () => {
         title: 'Test Video',
       } as any);
 
-      render(<App />);
+      renderApp();
       await act(async () => {
         fireEvent.click(screen.getByTestId('submit-video'));
       });
@@ -469,7 +479,7 @@ describe('App', () => {
     it('returns to input view on analyze API error', async () => {
       mockedApiRequest.mockRejectedValue(new Error('Server error'));
 
-      render(<App />);
+      renderApp();
       await act(async () => {
         fireEvent.click(screen.getByTestId('submit-video'));
       });
@@ -482,7 +492,7 @@ describe('App', () => {
     it('returns to input view on SSE error event', async () => {
       mockedApiRequest.mockResolvedValue({ sessionId: 'session-1', status: 'started' });
 
-      render(<App />);
+      renderApp();
       await act(async () => {
         fireEvent.click(screen.getByTestId('submit-video'));
       });
@@ -503,7 +513,7 @@ describe('App', () => {
     it('transitions to analyzing view with "Loading Text" heading', async () => {
       mockedApiRequest.mockResolvedValue({ sessionId: 'session-t1', status: 'started' });
 
-      render(<App />);
+      renderApp();
       await act(async () => {
         fireEvent.click(screen.getByTestId('submit-text'));
       });
@@ -526,7 +536,7 @@ describe('App', () => {
         title: 'Book Chapter',
       } as any);
 
-      render(<App />);
+      renderApp();
       await act(async () => {
         fireEvent.click(screen.getByTestId('submit-text'));
       });
@@ -539,7 +549,7 @@ describe('App', () => {
     it('returns to input view on text analyze error', async () => {
       mockedApiRequest.mockRejectedValue(new Error('Failed to fetch text'));
 
-      render(<App />);
+      renderApp();
       await act(async () => {
         fireEvent.click(screen.getByTestId('submit-text'));
       });
@@ -566,7 +576,7 @@ describe('App', () => {
         hasMoreChunks: false,
       });
 
-      render(<App />);
+      renderApp();
       await act(async () => {
         fireEvent.click(screen.getByTestId('submit-video'));
       });
@@ -594,7 +604,7 @@ describe('App', () => {
         title: 'Short Video',
       } as any);
 
-      render(<App />);
+      renderApp();
       await act(async () => {
         fireEvent.click(screen.getByTestId('submit-video'));
       });
@@ -623,7 +633,7 @@ describe('App', () => {
         hasMoreChunks: false,
       });
 
-      render(<App />);
+      renderApp();
       await act(async () => {
         fireEvent.click(screen.getByTestId('submit-video'));
       });
@@ -710,7 +720,7 @@ describe('App', () => {
       });
       mockedGetChunk.mockResolvedValue(chunkData);
 
-      render(<App />);
+      renderApp();
       const btn = type === 'video' ? 'submit-video' : 'submit-text';
       await act(async () => {
         fireEvent.click(screen.getByTestId(btn));
@@ -764,7 +774,7 @@ describe('App', () => {
         hasMoreChunks: false,
       });
 
-      render(<App />);
+      renderApp();
       await act(async () => {
         fireEvent.click(screen.getByTestId('submit-video'));
       });
@@ -806,7 +816,7 @@ describe('App', () => {
         hasMoreChunks: false,
       } as any);
 
-      render(<App />);
+      renderApp();
       await act(async () => {
         fireEvent.click(screen.getByTestId('submit-video'));
       });
@@ -851,7 +861,7 @@ describe('App', () => {
         hasMoreChunks: false,
       } as any);
 
-      render(<App />);
+      renderApp();
       await act(async () => {
         fireEvent.click(screen.getByTestId('submit-video'));
       });
@@ -878,7 +888,7 @@ describe('App', () => {
     it('cleans up SSE subscription on reset', async () => {
       mockedApiRequest.mockResolvedValue({ sessionId: 'session-1', status: 'started' });
 
-      render(<App />);
+      renderApp();
       await act(async () => {
         fireEvent.click(screen.getByTestId('submit-video'));
       });
@@ -913,7 +923,7 @@ describe('App', () => {
     it('cleans up SSE subscription on unmount', async () => {
       mockedApiRequest.mockResolvedValue({ sessionId: 'session-1', status: 'started' });
 
-      const { unmount } = render(<App />);
+      const { unmount } = renderApp();
       await act(async () => {
         fireEvent.click(screen.getByTestId('submit-video'));
       });
@@ -927,7 +937,7 @@ describe('App', () => {
 
   describe('Panel toggles', () => {
     it('opens settings panel when settings button clicked', () => {
-      render(<App />);
+      renderApp();
       expect(screen.queryByTestId('settings-panel')).toBeNull();
 
       fireEvent.click(screen.getByTitle('Settings'));
@@ -935,11 +945,90 @@ describe('App', () => {
     });
 
     it('opens review panel when deck badge clicked', () => {
-      render(<App />);
+      renderApp();
       expect(screen.queryByTestId('review-panel')).toBeNull();
 
       fireEvent.click(screen.getByTestId('deck-badge'));
       expect(screen.getByTestId('review-panel')).toBeInTheDocument();
+    });
+  });
+
+  // ─── Browser history (route guards) ──────────────────────
+
+  describe('Browser history', () => {
+    it('navigates to /chunks when multi-chunk analysis completes', async () => {
+      mockedApiRequest.mockResolvedValue({
+        sessionId: 'session-1',
+        status: 'cached',
+        title: 'Test Video',
+        totalDuration: 600,
+        chunks: [
+          { id: 'chunk-0', index: 0, status: 'ready', previewText: 'Part 1' },
+          { id: 'chunk-1', index: 1, status: 'ready', previewText: 'Part 2' },
+        ],
+        hasMoreChunks: false,
+      });
+
+      renderApp();
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('submit-video'));
+      });
+
+      await waitFor(() => {
+        expect(screen.getByTestId('chunk-menu')).toBeInTheDocument();
+      });
+    });
+
+    it('navigates to /player when chunk is selected', async () => {
+      mockedApiRequest.mockResolvedValue({
+        sessionId: 'session-1',
+        status: 'cached',
+        title: 'Test Video',
+        totalDuration: 600,
+        chunks: [
+          { id: 'chunk-0', index: 0, status: 'ready', previewText: 'Part 1' },
+          { id: 'chunk-1', index: 1, status: 'ready', previewText: 'Part 2' },
+        ],
+        hasMoreChunks: false,
+      });
+      mockedGetChunk.mockResolvedValue({
+        videoUrl: '/video/part1.mp4',
+        transcript: mockTranscript,
+        title: 'Part 1',
+      } as any);
+
+      renderApp();
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('submit-video'));
+      });
+      await waitFor(() => {
+        expect(screen.getByTestId('chunk-menu')).toBeInTheDocument();
+      });
+
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('chunk-chunk-0'));
+      });
+      await waitFor(() => {
+        expect(screen.getByTestId('video-player')).toBeInTheDocument();
+      });
+    });
+
+    it('route guard: starting at /chunks with no session redirects to /', async () => {
+      renderApp('/chunks');
+
+      await waitFor(() => {
+        expect(screen.getByTestId('video-input')).toBeInTheDocument();
+      });
+      expect(screen.queryByTestId('chunk-menu')).toBeNull();
+    });
+
+    it('route guard: starting at /player with no data redirects to /', async () => {
+      renderApp('/player');
+
+      await waitFor(() => {
+        expect(screen.getByTestId('video-input')).toBeInTheDocument();
+      });
+      expect(screen.queryByTestId('video-player')).toBeNull();
     });
   });
 });
