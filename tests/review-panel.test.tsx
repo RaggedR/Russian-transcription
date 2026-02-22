@@ -75,12 +75,16 @@ describe('ReviewPanel flashcard direction', () => {
     expect(getBackTranslation(container)).toBe('hello');
   });
 
-  it('shows context sentences on the back after clicking Show Answer (swapped fields)', () => {
+  it('shows example sentences on the back after clicking Show Answer (swapped fields)', () => {
     const card = makeCard({
       word: 'hello',
       translation: 'привет',
-      context: 'Say hello to everyone.',
-      contextTranslation: 'Скажи привет всем.',
+      dictionary: {
+        stressedForm: 'приве́т',
+        pos: 'noun',
+        translations: ['hello', 'hi'],
+        example: { russian: 'Скажи привет всем.', english: 'Say hello to everyone.' },
+      },
     });
     const { container } = render(<ReviewPanel {...defaultProps} dueCards={[card]} />);
 
@@ -95,12 +99,16 @@ describe('ReviewPanel flashcard direction', () => {
     expect(container.textContent).toContain('Say hello');
   });
 
-  it('shows context sentences on the back after clicking Show Answer (normal fields)', () => {
+  it('shows example sentences on the back after clicking Show Answer (normal fields)', () => {
     const card = makeCard({
       word: 'привет',
       translation: 'hello',
-      context: 'Скажи привет всем.',
-      contextTranslation: 'Say hello to everyone.',
+      dictionary: {
+        stressedForm: 'приве́т',
+        pos: 'noun',
+        translations: ['hello', 'hi'],
+        example: { russian: 'Скажи привет всем.', english: 'Say hello to everyone.' },
+      },
     });
     const { container } = render(<ReviewPanel {...defaultProps} dueCards={[card]} />);
 

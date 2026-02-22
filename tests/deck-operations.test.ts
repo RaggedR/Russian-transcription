@@ -12,12 +12,10 @@ function addCard(
   word: string,
   translation: string,
   sourceLanguage: string,
-  context?: string,
-  contextTranslation?: string,
 ): SRSCard[] {
   const id = normalizeCardId(word);
   if (deck.some(c => c.id === id)) return deck; // duplicate
-  return [...deck, createCard(word, translation, sourceLanguage, context, contextTranslation)];
+  return [...deck, createCard(word, translation, sourceLanguage)];
 }
 
 function removeCard(deck: SRSCard[], id: string): SRSCard[] {
@@ -64,10 +62,11 @@ describe('addCard', () => {
     expect(deck2).toBe(deck1);
   });
 
-  it('adds card with context', () => {
-    const deck = addCard([], 'слово', 'word', 'ru', 'Это слово.', 'This is a word.');
-    expect(deck[0].context).toBe('Это слово.');
-    expect(deck[0].contextTranslation).toBe('This is a word.');
+  it('adds card with correct SRS defaults', () => {
+    const deck = addCard([], 'слово', 'word', 'ru');
+    expect(deck[0].easeFactor).toBe(2.5);
+    expect(deck[0].interval).toBe(0);
+    expect(deck[0].repetition).toBe(0);
   });
 });
 

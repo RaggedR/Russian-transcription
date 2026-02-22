@@ -9,7 +9,7 @@ interface TranscriptPanelProps {
   config: TranslatorConfig;
   wordFrequencies?: Map<string, number>;
   isLoading?: boolean;
-  onAddToDeck?: (word: string, translation: string, sourceLanguage: string, context?: string, contextTranslation?: string, dictionary?: DictionaryEntry) => void;
+  onAddToDeck?: (word: string, translation: string, sourceLanguage: string, dictionary?: DictionaryEntry) => void;
   isWordInDeck?: (word: string) => boolean;
 }
 
@@ -67,7 +67,6 @@ export function TranscriptPanel({
   const containerRef = useRef<HTMLDivElement>(null);
   const currentWordRef = useRef<HTMLSpanElement>(null);
   const [selectedWord, setSelectedWord] = useState<WordTimestamp | null>(null);
-  const [selectedContext, setSelectedContext] = useState<string | undefined>(undefined);
   const [translation, setTranslation] = useState<Translation | null>(null);
   const [isTranslating, setIsTranslating] = useState(false);
   const [translationError, setTranslationError] = useState<string | null>(null);
@@ -112,23 +111,6 @@ export function TranscriptPanel({
         return;
       }
 
-      // Grab a window of ~30 words around the clicked word as raw context.
-      // The LLM will extract the exact sentence when adding to deck.
-      const words = transcript.words;
-      const clickedIdx = words.indexOf(word);
-      if (clickedIdx >= 0) {
-        const WINDOW = 15;
-        const start = Math.max(0, clickedIdx - WINDOW);
-        const end = Math.min(words.length - 1, clickedIdx + WINDOW);
-        const context = words.slice(start, end + 1)
-          .map(w => w.word)
-          .join('')
-          .trim();
-        setSelectedContext(context || undefined);
-      } else {
-        setSelectedContext(undefined);
-      }
-
       // Show translation popup
       setSelectedWord(word);
       setTranslation(null);
@@ -151,12 +133,11 @@ export function TranscriptPanel({
         setIsTranslating(false);
       }
     },
-    [transcript.words]
+    []
   );
 
   const handleClosePopup = useCallback(() => {
     setSelectedWord(null);
-    setSelectedContext(undefined);
     setTranslation(null);
     setTranslationError(null);
   }, []);
@@ -219,7 +200,6 @@ export function TranscriptPanel({
                   onClose={handleClosePopup}
                   onAddToDeck={onAddToDeck}
                   isInDeck={isWordInDeck?.(word.word)}
-                  context={selectedContext}
                 />
               )}
               {' '}

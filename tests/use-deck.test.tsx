@@ -154,14 +154,15 @@ describe('useDeck', () => {
     const { result } = renderHook(() => useDeck('user-1'));
     await act(async () => { await vi.runAllTimersAsync(); });
 
+    const dict = { stressedForm: 'приве́т', pos: 'other', translations: ['hello'] };
     act(() => {
-      result.current.addCard('Привет', 'Hello', 'ru', 'Привет, мир!', 'Hello, world!');
+      result.current.addCard('Привет', 'Hello', 'ru', dict);
     });
 
     expect(result.current.cards).toHaveLength(1);
     expect(result.current.cards[0].word).toBe('Привет');
     expect(result.current.cards[0].translation).toBe('Hello');
-    expect(result.current.cards[0].context).toBe('Привет, мир!');
+    expect(result.current.cards[0].dictionary).toEqual(dict);
   });
 
   it('prevents duplicate cards (same normalized id)', async () => {

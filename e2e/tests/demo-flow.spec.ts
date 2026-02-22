@@ -104,12 +104,18 @@ async function setupDemoRoutes(page: any, options: { contentType?: 'video' | 'te
     });
   });
 
-  // POST /api/extract-sentence
-  await page.route('**/api/extract-sentence', async (route: any) => {
+  // POST /api/generate-examples
+  await page.route('**/api/generate-examples', async (route: any) => {
+    const body = route.request().postDataJSON();
+    const words: string[] = body?.words || [];
+    const examples: Record<string, { russian: string; english: string }> = {};
+    for (const word of words) {
+      examples[word] = { russian: 'Привет, как дела?', english: 'Hello, how are you?' };
+    }
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify({ sentence: 'Привет, как дела?', translation: 'Hello, how are you?' }),
+      body: JSON.stringify({ examples }),
     });
   });
 

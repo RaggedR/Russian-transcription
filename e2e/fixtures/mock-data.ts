@@ -100,9 +100,9 @@ export const MOCK_TRANSLATION = {
   dictionary: MOCK_DICTIONARY,
 };
 
-export const MOCK_SENTENCE = {
-  sentence: 'Привет, как дела?',
-  translation: 'Hello, how are you?',
+export const MOCK_EXAMPLE = {
+  russian: 'Привет, как дела?',
+  english: 'Hello, how are you?',
 };
 
 export function makeDueCard(overrides: Partial<SRSCard> = {}): SRSCard {

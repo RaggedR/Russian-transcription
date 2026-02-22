@@ -7,18 +7,21 @@ test.describe('Add word to deck', () => {
     await setupMockRoutes(page, { chunks: MOCK_SINGLE_CHUNK, cached: true });
   });
 
-  test('click word → popup → "Add to deck" → calls extract-sentence → shows "In deck"', async ({ page }) => {
-    // Track extract-sentence calls
-    let extractSentenceCalled = false;
-    await page.route('**/api/extract-sentence', async (route) => {
-      extractSentenceCalled = true;
+  test('click word → popup → "Add to deck" → calls generate-examples → shows "In deck"', async ({ page }) => {
+    // Track generate-examples calls
+    let generateExamplesCalled = false;
+    await page.route('**/api/generate-examples', async (route) => {
+      generateExamplesCalled = true;
+      const body = route.request().postDataJSON();
+      const words: string[] = body?.words || [];
+      const examples: Record<string, { russian: string; english: string }> = {};
+      for (const word of words) {
+        examples[word] = { russian: 'Привет, как дела?', english: 'Hello, how are you?' };
+      }
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({
-          sentence: 'Я хочу рассказать вам историю.',
-          translation: 'I want to tell you a story.',
-        }),
+        body: JSON.stringify({ examples }),
       });
     });
 
@@ -38,8 +41,8 @@ test.describe('Add word to deck', () => {
     // Wait for the "In deck" confirmation
     await expect(popup.locator('text=In deck')).toBeVisible({ timeout: 5000 });
 
-    // Verify extract-sentence was called
-    expect(extractSentenceCalled).toBe(true);
+    // Verify generate-examples was called
+    expect(generateExamplesCalled).toBe(true);
   });
 
   test('word already in deck shows "In deck" immediately', async ({ page }) => {

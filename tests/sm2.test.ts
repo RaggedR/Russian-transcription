@@ -71,16 +71,15 @@ describe('createCard', () => {
     expect(reviewTime).toBeLessThanOrEqual(after);
   });
 
-  it('stores context and contextTranslation when provided', () => {
-    const card = createCard('слово', 'word', 'ru', 'Это слово.', 'This is a word.');
-    expect(card.context).toBe('Это слово.');
-    expect(card.contextTranslation).toBe('This is a word.');
+  it('stores dictionary when provided', () => {
+    const dict = { stressedForm: 'сло́во', pos: 'noun', translations: ['word'] };
+    const card = createCard('слово', 'word', 'ru', dict);
+    expect(card.dictionary).toEqual(dict);
   });
 
-  it('omits context when not provided', () => {
+  it('omits dictionary when not provided', () => {
     const card = createCard('слово', 'word', 'ru');
-    expect(card.context).toBeUndefined();
-    expect(card.contextTranslation).toBeUndefined();
+    expect(card.dictionary).toBeUndefined();
   });
 
   it('sets addedAt to approximately now', () => {

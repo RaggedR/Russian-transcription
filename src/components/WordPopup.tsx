@@ -8,9 +8,8 @@ interface WordPopupProps {
   error: string | null;
   position: { x: number; y: number } | null;
   onClose: () => void;
-  onAddToDeck?: (word: string, translation: string, sourceLanguage: string, context?: string, contextTranslation?: string, dictionary?: DictionaryEntry) => void;
+  onAddToDeck?: (word: string, translation: string, sourceLanguage: string, dictionary?: DictionaryEntry) => void;
   isInDeck?: boolean;
-  context?: string;
 }
 
 function speak(text: string, language: string) {
@@ -37,7 +36,6 @@ export function WordPopup({
   onClose,
   onAddToDeck,
   isInDeck,
-  context,
 }: WordPopupProps) {
   const [isAddingToDeck, setIsAddingToDeck] = useState(false);
 
@@ -51,26 +49,26 @@ export function WordPopup({
     if (!translation || !onAddToDeck) return;
     setIsAddingToDeck(true);
     try {
-      let sentence: string | undefined;
-      let contextTranslation: string | undefined;
-      if (context) {
-        // Ask GPT to extract the exact sentence and translate it
-        const data = await apiRequest<{ sentence: string; translation: string }>('/api/extract-sentence', {
-          method: 'POST',
-          body: JSON.stringify({ text: context, word: translation.word }),
-        });
-        sentence = data.sentence;
-        contextTranslation = data.translation;
+      let dictionary = translation.dictionary;
+      if (dictionary) {
+        // Generate an example sentence at card creation time
+        const { examples } = await apiRequest<{ examples: Record<string, { russian: string; english: string } | null> }>(
+          '/api/generate-examples',
+          { method: 'POST', body: JSON.stringify({ words: [translation.word] }) },
+        );
+        const example = examples[translation.word];
+        if (example) {
+          dictionary = { ...dictionary, example };
+        }
       }
-      onAddToDeck(translation.word, translation.translation, translation.sourceLanguage, sentence, contextTranslation, translation.dictionary);
+      onAddToDeck(translation.word, translation.translation, translation.sourceLanguage, dictionary);
     } catch {
-      // Still add without sentence if extraction fails — dictionary data is kept
-      // since the dictionary lookup succeeded (only sentence extraction failed)
-      onAddToDeck(translation.word, translation.translation, translation.sourceLanguage, undefined, undefined, translation.dictionary);
+      // Still add card without example if generation fails — dictionary data is kept
+      onAddToDeck(translation.word, translation.translation, translation.sourceLanguage, translation.dictionary);
     } finally {
       setIsAddingToDeck(false);
     }
-  }, [translation, onAddToDeck, context]);
+  }, [translation, onAddToDeck]);
 
   if (!position) return null;
 

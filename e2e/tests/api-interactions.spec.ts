@@ -98,25 +98,27 @@ test.describe('API interactions — button → API call → response → UI upda
     await expect(page.locator('.shadow-lg')).toBeVisible();
   });
 
-  // ─── POST /api/extract-sentence ────────────────────────────
+  // ─── POST /api/generate-examples ──────────────────────────
 
-  test('Add to Deck sends POST /api/extract-sentence with context and word', async ({ page }) => {
-    let extractBody: any = null;
-    let extractCalled = false;
+  test('Add to Deck sends POST /api/generate-examples with word', async ({ page }) => {
+    let generateBody: any = null;
+    let generateCalled = false;
 
     await setupMockRoutes(page, { chunks: MOCK_SINGLE_CHUNK, cached: true });
 
-    // Override extract-sentence route to capture request
-    await page.route('**/api/extract-sentence', async route => {
-      extractBody = route.request().postDataJSON();
-      extractCalled = true;
+    // Override generate-examples route to capture request
+    await page.route('**/api/generate-examples', async route => {
+      generateBody = route.request().postDataJSON();
+      generateCalled = true;
+      const words: string[] = generateBody?.words || [];
+      const examples: Record<string, { russian: string; english: string }> = {};
+      for (const word of words) {
+        examples[word] = { russian: 'Привет, как дела?', english: 'Hello, how are you?' };
+      }
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({
-          sentence: 'Я хочу рассказать вам историю.',
-          translation: 'I want to tell you a story.',
-        }),
+        body: JSON.stringify({ examples }),
       });
     });
 
@@ -133,12 +135,10 @@ test.describe('API interactions — button → API call → response → UI upda
     // Wait for "In deck" confirmation
     await expect(page.locator('text=In deck')).toBeVisible({ timeout: 5000 });
 
-    // Verify extract-sentence was called
-    expect(extractCalled).toBe(true);
-    expect(extractBody).toHaveProperty('word', 'рассказать');
-    expect(extractBody).toHaveProperty('text');
-    // The text should be a ~30-word context window around the clicked word
-    expect(extractBody.text).toContain('рассказать');
+    // Verify generate-examples was called with the word
+    expect(generateCalled).toBe(true);
+    expect(generateBody).toHaveProperty('words');
+    expect(generateBody.words).toContain('рассказать');
   });
 
   // ─── POST /api/download-chunk ──────────────────────────────

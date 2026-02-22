@@ -70,12 +70,16 @@ test.describe('Flashcard review (regression tests)', () => {
     await expect(frontText).toContainText('привет');
   });
 
-  test('context sentences visible on card', async ({ page }) => {
+  test('example sentences visible on card', async ({ page }) => {
     const card = makeDueCard({
       word: 'привет',
       translation: 'hello',
-      context: 'Привет, как дела?',
-      contextTranslation: 'Hello, how are you?',
+      dictionary: {
+        stressedForm: 'приве\u0301т',
+        pos: 'other',
+        translations: ['hello', 'hi'],
+        example: { russian: 'Привет, как дела?', english: 'Hello, how are you?' },
+      },
     });
     await page.goto('/');
     await page.evaluate((cards) => {
@@ -86,13 +90,13 @@ test.describe('Flashcard review (regression tests)', () => {
     const deckBadge = page.locator('button[title*="review"], button[title*="due"]');
     await deckBadge.click();
 
-    // Context sentences NOT visible before reveal (RichCardBack renders on back only)
+    // Example sentences NOT visible before reveal (RichCardBack renders on back only)
     await expect(page.locator('text=как дела')).not.toBeVisible();
 
     // Show answer
     await page.locator('text=Show Answer').click();
 
-    // Both context sentences visible after reveal via RichCardBack
+    // Both example sentences visible after reveal via RichCardBack
     await expect(page.locator('text=как дела')).toBeVisible();
     await expect(page.locator('text=how are you')).toBeVisible();
   });

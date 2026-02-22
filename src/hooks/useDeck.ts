@@ -191,11 +191,11 @@ export function useDeck(userId: string | null) {
   const dueCards = useMemo(() => getDueCardsFromAll(cards), [cards]);
   const dueCount = dueCards.length;
 
-  const addCard = useCallback((word: string, translation: string, sourceLanguage: string, context?: string, contextTranslation?: string, dictionary?: DictionaryEntry) => {
+  const addCard = useCallback((word: string, translation: string, sourceLanguage: string, dictionary?: DictionaryEntry) => {
     setCards(prev => {
       const id = normalizeCardId(word);
       if (prev.some(c => c.id === id)) return prev; // duplicate
-      const next = [...prev, createCard(word, translation, sourceLanguage, context, contextTranslation, dictionary)];
+      const next = [...prev, createCard(word, translation, sourceLanguage, dictionary)];
       saveToFirestore(next);
       return next;
     });

@@ -4,7 +4,7 @@ import {
   MOCK_TRANSCRIPT,
   MOCK_CHUNKS,
   MOCK_TRANSLATION,
-  MOCK_SENTENCE,
+  MOCK_EXAMPLE,
 } from './mock-data';
 
 /**
@@ -128,21 +128,18 @@ export async function setupMockRoutes(page: Page, options: {
     });
   });
 
-  // POST /api/generate-examples → GPT example sentences (return empty for E2E)
+  // POST /api/generate-examples → GPT example sentences
   await page.route('**/api/generate-examples', async (route) => {
+    const body = route.request().postDataJSON();
+    const words: string[] = body?.words || [];
+    const examples: Record<string, typeof MOCK_EXAMPLE> = {};
+    for (const word of words) {
+      examples[word] = MOCK_EXAMPLE;
+    }
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify({ examples: {} }),
-    });
-  });
-
-  // POST /api/extract-sentence → sentence + translation
-  await page.route('**/api/extract-sentence', async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify(MOCK_SENTENCE),
+      body: JSON.stringify({ examples }),
     });
   });
 
