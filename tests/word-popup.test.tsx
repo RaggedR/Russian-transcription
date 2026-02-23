@@ -1,14 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import { WordPopup } from '../src/components/WordPopup';
 import type { Translation } from '../src/types';
-
-// Mock the API module
-vi.mock('../src/services/api', () => ({
-  apiRequest: vi.fn().mockResolvedValue({
-    examples: { 'привет': { russian: 'Привет, как дела?', english: 'Hello, how are you?' } },
-  }),
-}));
 
 const MOCK_TRANSLATION: Translation = {
   word: 'привет',
@@ -115,53 +108,22 @@ describe('WordPopup', () => {
     expect(screen.queryByText('In deck')).not.toBeInTheDocument();
   });
 
-  it('calls generate-examples then onAddToDeck with enriched dictionary', async () => {
-    const { apiRequest } = await import('../src/services/api');
+  it('calls onAddToDeck synchronously with word, translation, and dictionary', () => {
     const onAddToDeck = vi.fn();
     renderPopup({ onAddToDeck, isInDeck: false });
 
     fireEvent.click(screen.getByText('Add to deck'));
 
-    await waitFor(() => {
-      expect(onAddToDeck).toHaveBeenCalledWith(
-        'привет',
-        'hello',
-        'ru',
-        expect.objectContaining({
-          stressedForm: 'приве́т',
-          example: { russian: 'Привет, как дела?', english: 'Hello, how are you?' },
-        }),
-      );
-    });
-
-    expect(apiRequest).toHaveBeenCalledWith('/api/generate-examples', {
-      method: 'POST',
-      body: JSON.stringify({ words: ['привет'] }),
-    });
+    expect(onAddToDeck).toHaveBeenCalledTimes(1);
+    expect(onAddToDeck).toHaveBeenCalledWith(
+      'привет',
+      'hello',
+      'ru',
+      MOCK_TRANSLATION.dictionary,
+    );
   });
 
-  it('still calls onAddToDeck without example if generate-examples fails', async () => {
-    const { apiRequest } = await import('../src/services/api');
-    (apiRequest as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('API down'));
-
-    const onAddToDeck = vi.fn();
-    renderPopup({ onAddToDeck, isInDeck: false });
-
-    fireEvent.click(screen.getByText('Add to deck'));
-
-    await waitFor(() => {
-      // Should fall back to calling with original dictionary (no example)
-      expect(onAddToDeck).toHaveBeenCalledWith(
-        'привет',
-        'hello',
-        'ru',
-        MOCK_TRANSLATION.dictionary,
-      );
-    });
-  });
-
-  it('skips generate-examples call when no dictionary data', async () => {
-    const { apiRequest } = await import('../src/services/api');
+  it('calls onAddToDeck with undefined dictionary when no dictionary data', () => {
     const noDictTranslation: Translation = {
       word: 'привет',
       translation: 'hello',
@@ -176,11 +138,6 @@ describe('WordPopup', () => {
 
     fireEvent.click(screen.getByText('Add to deck'));
 
-    await waitFor(() => {
-      expect(onAddToDeck).toHaveBeenCalledWith('привет', 'hello', 'ru', undefined);
-    });
-
-    // generate-examples should NOT be called
-    expect(apiRequest).not.toHaveBeenCalled();
+    expect(onAddToDeck).toHaveBeenCalledWith('привет', 'hello', 'ru', undefined);
   });
 });

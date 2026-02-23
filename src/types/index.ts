@@ -131,8 +131,6 @@ export interface SRSCard {
   word: string;              // Russian display form
   translation: string;       // English
   sourceLanguage: string;
-  context?: string;          // example sentence from transcript (Russian)
-  contextTranslation?: string; // translated sentence (English)
   dictionary?: DictionaryEntry; // rich grammar data from OpenRussian
   easeFactor: number;        // starts 2.5, min 1.3
   interval: number;          // days until next review

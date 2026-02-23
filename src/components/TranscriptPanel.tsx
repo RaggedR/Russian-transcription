@@ -2,6 +2,7 @@ import { useRef, useEffect, useCallback, useState } from 'react';
 import type { Transcript, WordTimestamp, Translation, TranslatorConfig, DictionaryEntry } from '../types';
 import { WordPopup } from './WordPopup';
 import { apiRequest } from '../services/api';
+import { normalizeRussianWord } from '../utils/russian';
 
 interface TranscriptPanelProps {
   transcript: Transcript;
@@ -48,13 +49,6 @@ function isRussianWord(word: string): boolean {
   return false;
 }
 
-// Strip punctuation, lowercase, and normalize ё→е for frequency lookup.
-// Russian text uses ё and е interchangeably, but frequency corpora
-// typically list the ё-less spelling with a higher rank.
-function normalizeWord(word: string): string {
-  return word.toLowerCase().replace(/[^а-яёА-ЯЁ]/g, '').replace(/ё/g, 'е');
-}
-
 export function TranscriptPanel({
   transcript,
   currentTime,
@@ -81,7 +75,7 @@ export function TranscriptPanel({
   const isInFreqRange = useCallback((word: WordTimestamp): boolean => {
     if (!hasFreqRange) return false;
     // Normalize ё→е on lemma too, since the corpus uses е-spellings
-    const lookupWord = (word.lemma || normalizeWord(word.word)).replace(/ё/g, 'е');
+    const lookupWord = (word.lemma || normalizeRussianWord(word.word)).replace(/ё/g, 'е');
     if (!lookupWord) return false;
     const rank = wordFrequencies!.get(lookupWord);
     if (rank == null) return false;

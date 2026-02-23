@@ -1,9 +1,9 @@
 import type { SRSCard, SRSRating, DictionaryEntry } from '../types';
+import { normalizeRussianWord } from './russian';
 
-// Strip punctuation, lowercase, and normalize ё→е for deduplication.
-// Matches the normalizeWord() logic in TranscriptPanel.
+// Delegate to shared normalizeRussianWord for card ID deduplication.
 export function normalizeCardId(word: string): string {
-  return word.toLowerCase().replace(/[^а-яёа-яё]/g, '').replace(/ё/g, 'е');
+  return normalizeRussianWord(word);
 }
 
 export function createCard(word: string, translation: string, sourceLanguage: string, dictionary?: DictionaryEntry): SRSCard {
@@ -43,15 +43,11 @@ function addDays(days: number): string {
 export function sm2(card: SRSCard, rating: SRSRating): SRSCard {
   let { easeFactor, interval, repetition } = card;
 
-  // Update ease factor (always, for all ratings — never below 1.3)
-  easeFactor = easeFactor + (0.1 - (5 - rating) * (0.08 + (5 - rating) * 0.02));
-  if (easeFactor < 1.3) easeFactor = 1.3;
-
   const now = new Date().toISOString();
   let nextReviewDate: string;
 
   if (repetition === 0) {
-    // Learning phase
+    // Learning phase — EF stays unchanged (only scheduling changes)
     switch (rating) {
       case 0: // Again — 1 minute
         nextReviewDate = addMinutes(1);
@@ -73,7 +69,10 @@ export function sm2(card: SRSCard, rating: SRSRating): SRSCard {
         break;
     }
   } else {
-    // Review phase
+    // Review phase — update ease factor (never below 1.3)
+    easeFactor = easeFactor + (0.1 - (5 - rating) * (0.08 + (5 - rating) * 0.02));
+    if (easeFactor < 1.3) easeFactor = 1.3;
+
     switch (rating) {
       case 0: // Again — lapse back to learning
         repetition = 0;
