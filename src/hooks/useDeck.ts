@@ -89,30 +89,31 @@ export function useDeck(userId: string | null) {
   const dueCount = dueCards.length;
 
   const addCard = useCallback((word: string, translation: string, sourceLanguage: string, dictionary?: DictionaryEntry) => {
+    const id = normalizeCardId(word);
+
     setCards(prev => {
-      const id = normalizeCardId(word);
       if (prev.some(c => c.id === id)) return prev; // duplicate
       const newCard = createCard(word, translation, sourceLanguage, dictionary);
       const next = [...prev, newCard];
       saveToFirestore(next);
-
-      // Fire-and-forget: generate example sentence for the new card
-      if (dictionary && !dictionary.example) {
-        enrichSingleCardExample(word, dictionary).then(enrichedDict => {
-          if (enrichedDict && enrichedDict !== dictionary) {
-            setCards(current => {
-              const updated = current.map(c =>
-                c.id === newCard.id ? { ...c, dictionary: enrichedDict } : c
-              );
-              saveToFirestore(updated);
-              return updated;
-            });
-          }
-        });
-      }
-
       return next;
     });
+
+    // Fire-and-forget: generate example sentence for the new card (outside state updater)
+    if (!dictionary?.example) {
+      enrichSingleCardExample(word, dictionary, translation).then(enrichedDict => {
+        if (enrichedDict && enrichedDict !== dictionary) {
+          setCards(current => {
+            if (!current.some(c => c.id === id)) return current; // card was removed
+            const updated = current.map(c =>
+              c.id === id ? { ...c, dictionary: enrichedDict } : c
+            );
+            saveToFirestore(updated);
+            return updated;
+          });
+        }
+      });
+    }
   }, [saveToFirestore]);
 
   const removeCard = useCallback((id: string) => {

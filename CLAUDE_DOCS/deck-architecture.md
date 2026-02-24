@@ -30,7 +30,7 @@ App.tsx
 
 2. **SM-2 ease factor only changes during review phase** — learning phase (repetition === 0) uses fixed intervals without modifying EF. This prevents new cards from being penalized by early struggles.
 
-3. **Enrichment is best-effort** — all enrichment functions catch errors, report to Sentry, and return the original data unchanged. The deck always loads successfully.
+3. **Enrichment is best-effort and dictionary-independent** — all enrichment functions catch errors, log to console, report to Sentry, and return the original data unchanged. The deck always loads successfully. Example generation works even when dictionary lookup fails: a minimal `DictionaryEntry` (`pos: '', stressedForm: word`) is created to hold the example.
 
 4. **Persistence uses factory pattern** — `createDebouncedSave()` returns a `{ save, cleanup }` object. The `useDeck` hook recreates it when `userId` changes.
 

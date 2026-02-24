@@ -648,7 +648,7 @@ describe('useDeck', () => {
     vi.useFakeTimers();
   });
 
-  it('skips example generation for cards without dictionary data', async () => {
+  it('generates examples for cards without dictionary data', async () => {
     vi.useRealTimers();
     const firestoreCards = [
       { id: 'слово', word: 'Слово', translation: 'Word', sourceLanguage: 'ru',
@@ -658,19 +658,36 @@ describe('useDeck', () => {
     ];
     mockGetDoc.mockResolvedValue(firestoreSnap({ cards: firestoreCards }));
 
-    // Dictionary enrichment returns null (word not found)
-    mockApiRequest.mockResolvedValue({ entries: {} });
+    const exampleData = { russian: 'Это новое слово.', english: 'This is a new word.' };
+    // Dictionary enrichment returns nothing, then example generation succeeds
+    mockApiRequest.mockImplementation((url: string) => {
+      if (url.includes('enrich-deck')) {
+        return Promise.resolve({ entries: {} });
+      }
+      if (url.includes('generate-examples')) {
+        return Promise.resolve({ examples: { 'Слово': exampleData } });
+      }
+      return Promise.reject(new Error('Unexpected API call'));
+    });
 
-    renderHook(() => useDeck('user-no-dict-no-examples'));
+    const { result } = renderHook(() => useDeck('user-no-dict-yes-examples'));
 
     await act(async () => {
       await new Promise(r => setTimeout(r, 200));
     });
 
-    // Should have been called for enrich-deck, but NOT for generate-examples
+    // Should have been called for BOTH enrich-deck AND generate-examples
     const calls = mockApiRequest.mock.calls;
     expect(calls.some((c: unknown[]) => (c[0] as string).includes('enrich-deck'))).toBe(true);
-    expect(calls.some((c: unknown[]) => (c[0] as string).includes('generate-examples'))).toBe(false);
+    expect(calls.some((c: unknown[]) => (c[0] as string).includes('generate-examples'))).toBe(true);
+
+    // Card should have a minimal dictionary entry with the example
+    expect(result.current.cards[0].dictionary).toEqual({
+      stressedForm: 'Слово',
+      pos: '',
+      translations: ['Word'],
+      example: exampleData,
+    });
     vi.useFakeTimers();
   });
 

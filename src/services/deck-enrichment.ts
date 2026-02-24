@@ -34,13 +34,16 @@ export async function enrichMissingDictionary(
       return c;
     });
   } catch (err) {
+    console.warn('[deck-enrichment] Dictionary enrichment failed:', err);
     Sentry.captureException(err, { tags: { operation: 'deck_enrich_dictionary' } });
     return cards;
   }
 }
 
 /**
- * Batch example sentence generation for cards that have dictionary data but no example.
+ * Batch example sentence generation for cards missing examples.
+ * Works regardless of whether cards have dictionary data — creates minimal
+ * DictionaryEntry to hold the example when dictionary is absent.
  * Batches in chunks of 50 to respect server limits.
  * Returns updated cards array.
  */
@@ -48,7 +51,7 @@ export async function enrichMissingExamples(
   cards: SRSCard[],
   signal?: { cancelled: boolean },
 ): Promise<SRSCard[]> {
-  const needsExamples = cards.filter(c => c.dictionary && !c.dictionary.example);
+  const needsExamples = cards.filter(c => !c.dictionary?.example);
   if (needsExamples.length === 0) return cards;
 
   try {
@@ -67,12 +70,26 @@ export async function enrichMissingExamples(
     if (signal?.cancelled) return cards;
 
     return cards.map(c => {
-      if (c.dictionary && !c.dictionary.example && allExamples[c.word]) {
-        return { ...c, dictionary: { ...c.dictionary, example: allExamples[c.word]! } };
+      if (!c.dictionary?.example && allExamples[c.word]) {
+        const example = allExamples[c.word]!;
+        if (c.dictionary) {
+          return { ...c, dictionary: { ...c.dictionary, example } };
+        }
+        // Create minimal dictionary entry to hold the example
+        return {
+          ...c,
+          dictionary: {
+            stressedForm: c.word,
+            pos: '',
+            translations: [c.translation],
+            example,
+          },
+        };
       }
       return c;
     });
   } catch (err) {
+    console.warn('[deck-enrichment] Example generation failed:', err);
     Sentry.captureException(err, { tags: { operation: 'deck_enrich_examples' } });
     return cards;
   }
@@ -85,9 +102,8 @@ export async function enrichMissingExamples(
 export async function enrichSingleCardExample(
   word: string,
   dictionary?: DictionaryEntry,
+  translation?: string,
 ): Promise<DictionaryEntry | undefined> {
-  if (!dictionary) return dictionary;
-
   try {
     const { examples } = await apiRequest<{ examples: Record<string, { russian: string; english: string } | null> }>(
       '/api/generate-examples',
@@ -95,10 +111,20 @@ export async function enrichSingleCardExample(
     );
     const example = examples[word];
     if (example) {
-      return { ...dictionary, example };
+      if (dictionary) {
+        return { ...dictionary, example };
+      }
+      // Create minimal dictionary entry to hold the example
+      return {
+        stressedForm: word,
+        pos: '',
+        translations: translation ? [translation] : [],
+        example,
+      };
     }
     return dictionary;
   } catch (err) {
+    console.warn('[deck-enrichment] Example generation failed:', word, err);
     Sentry.captureException(err, { tags: { operation: 'deck_enrich_single_example' } });
     return dictionary;
   }

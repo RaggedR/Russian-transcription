@@ -98,11 +98,20 @@ describe('enrichMissingExamples', () => {
     expect(mockApiRequest).not.toHaveBeenCalled();
   });
 
-  it('returns cards unchanged when none have dictionary data', async () => {
+  it('generates examples for cards without dictionary data', async () => {
+    const example = { russian: 'Это тест.', english: 'This is a test.' };
+    mockApiRequest.mockResolvedValue({ examples: { 'Тест': example } });
+
     const cards = [makeCard()]; // no dictionary
     const result = await enrichMissingExamples(cards);
-    expect(result).toBe(cards);
-    expect(mockApiRequest).not.toHaveBeenCalled();
+
+    expect(mockApiRequest).toHaveBeenCalled();
+    expect(result[0].dictionary).toEqual({
+      stressedForm: 'Тест',
+      pos: '',
+      translations: ['test'],
+      example,
+    });
   });
 
   it('enriches cards with dictionary but no example', async () => {
@@ -170,10 +179,26 @@ describe('enrichSingleCardExample', () => {
     vi.clearAllMocks();
   });
 
-  it('returns undefined when no dictionary provided', async () => {
+  it('generates example and creates minimal dictionary when no dictionary provided', async () => {
+    const example = { russian: 'Это тест.', english: 'This is a test.' };
+    mockApiRequest.mockResolvedValue({ examples: { 'тест': example } });
+
+    const result = await enrichSingleCardExample('тест', undefined, 'test');
+
+    expect(mockApiRequest).toHaveBeenCalledWith('/api/generate-examples', expect.anything());
+    expect(result).toEqual({
+      stressedForm: 'тест',
+      pos: '',
+      translations: ['test'],
+      example,
+    });
+  });
+
+  it('returns undefined when no dictionary and API returns no example', async () => {
+    mockApiRequest.mockResolvedValue({ examples: {} });
+
     const result = await enrichSingleCardExample('тест');
     expect(result).toBeUndefined();
-    expect(mockApiRequest).not.toHaveBeenCalled();
   });
 
   it('enriches dictionary with example', async () => {
@@ -207,5 +232,14 @@ describe('enrichSingleCardExample', () => {
       error,
       expect.objectContaining({ tags: { operation: 'deck_enrich_single_example' } }),
     );
+  });
+
+  it('returns undefined on error when no dictionary provided', async () => {
+    const error = new Error('API error');
+    mockApiRequest.mockRejectedValue(error);
+
+    const result = await enrichSingleCardExample('тест');
+    expect(result).toBeUndefined();
+    expect(mockCaptureException).toHaveBeenCalled();
   });
 });
