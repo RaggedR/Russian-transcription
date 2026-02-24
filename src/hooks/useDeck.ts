@@ -7,6 +7,7 @@ import {
   enrichMissingExamples,
   enrichSingleCardExample,
 } from '../services/deck-enrichment';
+import { cleanWord } from '../utils/russian';
 
 export function useDeck(userId: string | null) {
   const [cards, setCards] = useState<SRSCard[]>([]);
@@ -63,6 +64,17 @@ export function useDeck(userId: string | null) {
         }
       }
       if (!signal.cancelled) {
+        // Migrate: clean dirty words (leading spaces, trailing punctuation from Whisper)
+        const needsCleaning = loadedCards.some(c => c.word !== cleanWord(c.word));
+        if (needsCleaning) {
+          loadedCards = loadedCards.map(c => {
+            const cleaned = cleanWord(c.word);
+            return cleaned !== c.word ? { ...c, word: cleaned } : c;
+          });
+          setCards(loadedCards);
+          saveToFirestore(loadedCards);
+        }
+
         loadedUserRef.current = userId;
         setLoaded(true);
         // Enrich cards: (1) free dictionary lookup, then (2) GPT example generation
@@ -89,13 +101,14 @@ export function useDeck(userId: string | null) {
   const dueCount = dueCards.length;
 
   const addCard = useCallback(async (word: string, translation: string, sourceLanguage: string, dictionary?: DictionaryEntry): Promise<void> => {
-    const id = normalizeCardId(word);
+    const cleaned = cleanWord(word);
+    const id = normalizeCardId(cleaned);
 
     // Enrich BEFORE adding — await the API call so the card enters state with an example
     let enrichedDictionary = dictionary;
     if (!dictionary?.example) {
       try {
-        const result = await enrichSingleCardExample(word, dictionary, translation);
+        const result = await enrichSingleCardExample(cleaned, dictionary, translation);
         if (result) enrichedDictionary = result;
       } catch {
         // Graceful degradation — add card without example
@@ -104,7 +117,7 @@ export function useDeck(userId: string | null) {
 
     setCards(prev => {
       if (prev.some(c => c.id === id)) return prev; // duplicate
-      const newCard = createCard(word, translation, sourceLanguage, enrichedDictionary);
+      const newCard = createCard(cleaned, translation, sourceLanguage, enrichedDictionary);
       const next = [...prev, newCard];
       saveToFirestore(next);
       return next;
