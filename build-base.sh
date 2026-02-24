@@ -6,6 +6,6 @@ set -e
 
 echo "Building base image with Cloud Build..."
 cd server
-gcloud builds submit --tag gcr.io/book-friend-finder/russian-base:latest --dockerfile Dockerfile.base
+gcloud builds submit --tag gcr.io/russian-transcription/russian-base:latest --dockerfile Dockerfile.base
 
 echo "Done! Base image updated."
