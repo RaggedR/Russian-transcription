@@ -80,6 +80,7 @@ vi.mock('./stripe.js', () => ({
 
 import { getSubscriptionStatus, createCheckoutSession } from './stripe.js';
 import { lookupWord } from './dictionary.js';
+import { exampleCache } from './session-store.js';
 
 // ---------------------------------------------------------------------------
 // Mock dictionary.js — bypass CSV loading in tests
@@ -2262,6 +2263,146 @@ describe('V. POST /api/generate-examples', () => {
       expect(body.error).toMatch(/not configured/i);
     } finally {
       process.env.OPENAI_API_KEY = origKey;
+    }
+  });
+
+  it('returns cached examples without calling GPT', async () => {
+    // Pre-populate cache
+    exampleCache.set('тест', { russian: 'Это простой тест.', english: 'This is a simple test.' });
+
+    const originalFetch = globalThis.fetch;
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((url, ...args) => {
+      if (typeof url === 'string' && url.includes('openai.com')) {
+        throw new Error('GPT should not have been called');
+      }
+      return originalFetch(url, ...args);
+    });
+
+    try {
+      const res = await fetch(`${baseUrl}/api/generate-examples`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ words: ['тест'] }),
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.examples['тест']).toEqual({
+        russian: 'Это простой тест.',
+        english: 'This is a simple test.',
+      });
+
+      // GPT should NOT have been called
+      const openaiCalls = fetchSpy.mock.calls.filter(
+        c => typeof c[0] === 'string' && c[0].includes('openai.com')
+      );
+      expect(openaiCalls.length).toBe(0);
+    } finally {
+      vi.restoreAllMocks();
+      exampleCache.clear();
+    }
+  });
+
+  it('serves mixed cached and uncached words in one request', async () => {
+    // Pre-populate one word in cache
+    exampleCache.set('книга', { russian: 'Я люблю эту книгу.', english: 'I love this book.' });
+
+    const mockGptResponse = {
+      ok: true,
+      json: async () => ({
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              'дом': { russian: 'Мой дом большой.', english: 'My house is big.' },
+            }),
+          },
+        }],
+        usage: { prompt_tokens: 30, completion_tokens: 20, total_tokens: 50 },
+      }),
+    };
+
+    const originalFetch = globalThis.fetch;
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((url, ...args) => {
+      if (typeof url === 'string' && url.includes('openai.com')) {
+        return Promise.resolve(mockGptResponse);
+      }
+      return originalFetch(url, ...args);
+    });
+
+    try {
+      const res = await fetch(`${baseUrl}/api/generate-examples`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ words: ['книга', 'дом'] }),
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+
+      // Cached word returned from cache
+      expect(body.examples['книга']).toEqual({
+        russian: 'Я люблю эту книгу.',
+        english: 'I love this book.',
+      });
+      // Uncached word returned from GPT
+      expect(body.examples['дом']).toEqual({
+        russian: 'Мой дом большой.',
+        english: 'My house is big.',
+      });
+
+      // GPT should have been called with only the uncached word
+      const openaiCalls = fetchSpy.mock.calls.filter(
+        c => typeof c[0] === 'string' && c[0].includes('openai.com')
+      );
+      expect(openaiCalls.length).toBe(1);
+      const gptBody = JSON.parse(openaiCalls[0][1].body);
+      // The user message should only contain 'дом', not 'книга'
+      expect(gptBody.messages[1].content).toBe('дом');
+    } finally {
+      vi.restoreAllMocks();
+      exampleCache.clear();
+    }
+  });
+
+  it('caches fresh GPT results for subsequent requests', async () => {
+    exampleCache.clear();
+
+    const mockGptResponse = {
+      ok: true,
+      json: async () => ({
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              'мир': { russian: 'Мир во всём мире.', english: 'Peace in the whole world.' },
+            }),
+          },
+        }],
+        usage: { prompt_tokens: 30, completion_tokens: 20, total_tokens: 50 },
+      }),
+    };
+
+    const originalFetch = globalThis.fetch;
+    vi.spyOn(globalThis, 'fetch').mockImplementation((url, ...args) => {
+      if (typeof url === 'string' && url.includes('openai.com')) {
+        return Promise.resolve(mockGptResponse);
+      }
+      return originalFetch(url, ...args);
+    });
+
+    try {
+      // First request — should call GPT
+      await fetch(`${baseUrl}/api/generate-examples`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ words: ['мир'] }),
+      });
+
+      // Verify it was cached
+      expect(exampleCache.get('мир')).toEqual({
+        russian: 'Мир во всём мире.',
+        english: 'Peace in the whole world.',
+      });
+    } finally {
+      vi.restoreAllMocks();
+      exampleCache.clear();
     }
   });
 });

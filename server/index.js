@@ -14,7 +14,7 @@ import helmet from 'helmet';
 import * as Sentry from '@sentry/node';
 import { createChunks, createTextChunks, getChunkTranscript, formatTime } from './chunking.js';
 import {
-  localSessions, analysisSessions, urlSessionCache, translationCache,
+  localSessions, analysisSessions, urlSessionCache, translationCache, exampleCache,
   getSignedMediaUrl, getCachedExtraction, cacheExtraction,
   getCachedSession, cacheSessionUrl,
   getAnalysisSession, setAnalysisSession,
@@ -455,7 +455,7 @@ app.post('/api/enrich-deck', (req, res) => {
  * Accepts: { words: [string] }   (max 50)
  * Returns: { examples: { [word]: { russian: string, english: string } | null } }
  */
-app.post('/api/generate-examples', requireSubscription, requireBudget, async (req, res) => {
+app.post('/api/generate-examples', requireSubscription, async (req, res) => {
   const { words } = req.body;
 
   if (!words || !Array.isArray(words)) {
@@ -479,39 +479,66 @@ app.post('/api/generate-examples', requireSubscription, requireBudget, async (re
   }
 
   try {
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'gpt-4o-mini',
-        messages: [{
-          role: 'system',
-          content: 'You are a Russian language tutor. For each Russian word provided, generate one simple example sentence at A2-B1 level (5-12 words). Use the word in a natural inflected form. Return a JSON object mapping each word to { "russian": "<sentence>", "english": "<translation>" }.',
-        }, {
-          role: 'user',
-          content: words.join('\n'),
-        }],
-        response_format: { type: 'json_object' },
-        temperature: 0.7,
-      }),
-    });
-
-    if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.error?.message || 'Example generation failed');
+    // Check cache for each word — only call GPT for uncached words
+    const cached = {};
+    const uncached = [];
+    for (const w of words) {
+      const key = w.toLowerCase();
+      const hit = exampleCache.get(key);
+      if (hit) {
+        cached[w] = hit;
+      } else {
+        uncached.push(w);
+      }
     }
 
-    const data = await response.json();
-    let examples;
-    try {
-      examples = JSON.parse(data.choices[0].message.content);
-    } catch {
-      throw new Error('GPT returned invalid JSON for example sentences');
+    let freshExamples = {};
+    if (uncached.length > 0) {
+      // Only enforce budget when GPT will actually be called (cached requests are free)
+      let budgetOk = false;
+      requireBudget(req, res, () => { budgetOk = true; });
+      if (!budgetOk) return; // requireBudget already sent 429 response
+
+      const response = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: 'gpt-4o-mini',
+          messages: [{
+            role: 'system',
+            content: 'You are a Russian language tutor. For each Russian word provided, generate one simple example sentence at A2-B1 level (5-12 words). Use the word in a natural inflected form. Return a JSON object mapping each word to { "russian": "<sentence>", "english": "<translation>" }.',
+          }, {
+            role: 'user',
+            content: uncached.join('\n'),
+          }],
+          response_format: { type: 'json_object' },
+          temperature: 0.7,
+        }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error?.message || 'Example generation failed');
+      }
+
+      const data = await response.json();
+      try {
+        freshExamples = JSON.parse(data.choices[0].message.content);
+      } catch {
+        throw new Error('GPT returned invalid JSON for example sentences');
+      }
+      trackCost(req.uid, costs.gpt4oMini());
+
+      // Cache fresh results
+      for (const [word, example] of Object.entries(freshExamples)) {
+        if (example) exampleCache.set(word.toLowerCase(), example);
+      }
     }
-    trackCost(req.uid, costs.gpt4oMini());
+
+    const examples = { ...cached, ...freshExamples };
     res.json({ examples });
   } catch (error) {
     console.error('[GenerateExamples] Error:', error);

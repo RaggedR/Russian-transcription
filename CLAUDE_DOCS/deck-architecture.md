@@ -26,7 +26,7 @@ App.tsx
 
 ### Key Design Decisions
 
-1. **WordPopup is pure presentation** — clicking "Add to deck" synchronously calls `onAddToDeck`. Example sentence generation happens asynchronously in `useDeck` via fire-and-forget `enrichSingleCardExample()`.
+1. **WordPopup shows enrichment progress** — clicking "Add to deck" triggers an async `onAddToDeck` that awaits `enrichSingleCardExample()` before adding the card to state. WordPopup shows an "Adding..." spinner during this ~1-2s wait. This ensures the card enters state already enriched with an example sentence, avoiding stale-snapshot bugs in ReviewPanel. Server-side LRU cache (`exampleCache`, 10K entries) makes repeat words instant.
 
 2. **SM-2 ease factor only changes during review phase** — learning phase (repetition === 0) uses fixed intervals without modifying EF. This prevents new cards from being penalized by early struggles.
 

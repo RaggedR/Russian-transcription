@@ -1,4 +1,4 @@
-import { useCallback } from 'react';
+import { useCallback, useState } from 'react';
 import type { Translation, DictionaryEntry } from '../types';
 import { speak } from '../utils/russian';
 
@@ -8,7 +8,7 @@ interface WordPopupProps {
   error: string | null;
   position: { x: number; y: number } | null;
   onClose: () => void;
-  onAddToDeck?: (word: string, translation: string, sourceLanguage: string, dictionary?: DictionaryEntry) => void;
+  onAddToDeck?: (word: string, translation: string, sourceLanguage: string, dictionary?: DictionaryEntry) => void | Promise<void>;
   isInDeck?: boolean;
 }
 
@@ -27,10 +27,17 @@ export function WordPopup({
     }
   }, [translation]);
 
-  const handleAddToDeck = useCallback(() => {
-    if (!translation || !onAddToDeck) return;
-    onAddToDeck(translation.word, translation.translation, translation.sourceLanguage, translation.dictionary);
-  }, [translation, onAddToDeck]);
+  const [isAdding, setIsAdding] = useState(false);
+
+  const handleAddToDeck = useCallback(async () => {
+    if (!translation || !onAddToDeck || isAdding) return;
+    setIsAdding(true);
+    try {
+      await onAddToDeck(translation.word, translation.translation, translation.sourceLanguage, translation.dictionary);
+    } finally {
+      setIsAdding(false);
+    }
+  }, [translation, onAddToDeck, isAdding]);
 
   if (!position) return null;
 
@@ -110,6 +117,14 @@ export function WordPopup({
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                     </svg>
                     In deck
+                  </span>
+                ) : isAdding ? (
+                  <span data-testid="adding-spinner" className="inline-flex items-center gap-1 text-xs text-blue-600">
+                    <svg className="animate-spin w-3.5 h-3.5" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                    </svg>
+                    Adding...
                   </span>
                 ) : (
                   <button

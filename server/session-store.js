@@ -13,6 +13,7 @@ export { extractVideoId, normalizeUrl } from './storage/url-utils.js';
 export { urlSessionCache, cacheSessionUrl } from './storage/url-cache.js';
 export { getCachedExtraction, cacheExtraction } from './storage/extraction-cache.js';
 export { translationCache } from './storage/translation-cache.js';
+export { exampleCache } from './storage/example-cache.js';
 
 // Session CRUD
 export {
