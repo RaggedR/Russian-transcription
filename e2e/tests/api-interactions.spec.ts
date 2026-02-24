@@ -129,6 +129,9 @@ test.describe('API interactions — button → API call → response → UI upda
     await expect(page.locator('.shadow-lg')).toBeVisible({ timeout: 5000 });
     await expect(page.locator('text=Hello')).toBeVisible();
 
+    // Register response listener BEFORE click (response may arrive before await)
+    const generateResponsePromise = page.waitForResponse('**/api/generate-examples', { timeout: 5000 });
+
     // Click "Add to deck" — card is added instantly, example generation fires async
     await page.locator('text=Add to deck').click();
 
@@ -136,7 +139,7 @@ test.describe('API interactions — button → API call → response → UI upda
     await expect(page.locator('text=In deck')).toBeVisible({ timeout: 5000 });
 
     // Wait for the async generate-examples call from useDeck's fire-and-forget enrichment
-    await page.waitForResponse('**/api/generate-examples', { timeout: 5000 });
+    await generateResponsePromise;
     expect(generateCalled).toBe(true);
     expect(generateBody).toHaveProperty('words');
     expect(generateBody.words).toContain('рассказать');

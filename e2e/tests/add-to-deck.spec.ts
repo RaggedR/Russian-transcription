@@ -35,6 +35,9 @@ test.describe('Add word to deck', () => {
     // Wait for translation to load
     await expect(popup.locator('text=Hello')).toBeVisible({ timeout: 3000 });
 
+    // Register response listener BEFORE click (response may arrive before await)
+    const generateResponsePromise = page.waitForResponse('**/api/generate-examples', { timeout: 5000 });
+
     // Click "Add to deck" — card is added instantly, example generation fires async
     await popup.locator('text=Add to deck').click();
 
@@ -42,7 +45,7 @@ test.describe('Add word to deck', () => {
     await expect(popup.locator('text=In deck')).toBeVisible({ timeout: 5000 });
 
     // Wait for the async generate-examples call from useDeck's fire-and-forget enrichment
-    await page.waitForResponse('**/api/generate-examples', { timeout: 5000 });
+    await generateResponsePromise;
     expect(generateExamplesCalled).toBe(true);
   });
 
