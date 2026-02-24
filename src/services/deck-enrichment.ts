@@ -78,9 +78,15 @@ export async function enrichMissingExamples(
     }
     if (signal?.cancelled) return cards;
 
+    // Build a lowercase-keyed lookup so GPT's key casing doesn't matter
+    const examplesLower: Record<string, { russian: string; english: string }> = {};
+    for (const [k, v] of Object.entries(allExamples)) {
+      if (v) examplesLower[k.toLowerCase()] = v;
+    }
+
     return cards.map(c => {
-      if (!c.dictionary?.example && allExamples[c.word]) {
-        const example = allExamples[c.word]!;
+      const example = examplesLower[c.word.toLowerCase()];
+      if (!c.dictionary?.example && example) {
         if (c.dictionary) {
           return { ...c, dictionary: { ...c.dictionary, example } };
         }
@@ -109,7 +115,9 @@ export async function enrichSingleCardExample(
       '/api/generate-examples',
       { method: 'POST', body: JSON.stringify({ words: [word] }) },
     );
-    const example = examples[word];
+    // GPT may return keys in different casing than sent — do case-insensitive lookup
+    const wordLower = word.toLowerCase();
+    const example = examples[word] ?? Object.entries(examples).find(([k]) => k.toLowerCase() === wordLower)?.[1] ?? null;
     if (example) {
       if (dictionary) {
         return { ...dictionary, example };

@@ -158,6 +158,33 @@ describe('enrichMissingExamples', () => {
     expect(mockApiRequest).toHaveBeenCalledTimes(1); // Only one batch
   });
 
+  it('matches examples case-insensitively (GPT returns lowercase key)', async () => {
+    const example = { russian: 'Я читаю книгу.', english: 'I am reading a book.' };
+    // GPT returns lowercase "книгу" but the card word is capitalized "Книгу"
+    mockApiRequest.mockResolvedValue({ examples: { 'книгу': example } });
+
+    const cards = [makeCard({ word: 'Книгу', translation: 'book' })];
+    const result = await enrichMissingExamples(cards);
+
+    expect(result[0].dictionary).toEqual({
+      stressedForm: 'Книгу',
+      pos: '',
+      translations: ['book'],
+      example,
+    });
+  });
+
+  it('matches examples case-insensitively when card has dictionary', async () => {
+    const dict: DictionaryEntry = { stressedForm: 'кни́гу', pos: 'noun', translations: ['book'] };
+    const example = { russian: 'Я читаю книгу.', english: 'I am reading a book.' };
+    mockApiRequest.mockResolvedValue({ examples: { 'книгу': example } });
+
+    const cards = [makeCard({ word: 'Книгу', dictionary: dict })];
+    const result = await enrichMissingExamples(cards);
+
+    expect(result[0].dictionary?.example).toEqual(example);
+  });
+
   it('reports errors to Sentry and returns original cards', async () => {
     const dict: DictionaryEntry = { stressedForm: 'те́ст', pos: 'noun', translations: ['test'] };
     const error = new Error('GPT error');
@@ -210,6 +237,31 @@ describe('enrichSingleCardExample', () => {
 
     expect(result).toEqual({ ...dict, example });
     expect(mockApiRequest).toHaveBeenCalledWith('/api/generate-examples', expect.anything());
+  });
+
+  it('matches example case-insensitively (GPT returns lowercase key for capitalized word)', async () => {
+    const dict: DictionaryEntry = { stressedForm: 'кни́гу', pos: 'noun', translations: ['book'] };
+    const example = { russian: 'Я читаю книгу.', english: 'I am reading a book.' };
+    // Word sent: "Книгу" (capitalized), GPT returns: "книгу" (lowercase)
+    mockApiRequest.mockResolvedValue({ examples: { 'книгу': example } });
+
+    const result = await enrichSingleCardExample('Книгу', dict);
+
+    expect(result).toEqual({ ...dict, example });
+  });
+
+  it('matches example case-insensitively without dictionary', async () => {
+    const example = { russian: 'Я читаю книгу.', english: 'I am reading a book.' };
+    mockApiRequest.mockResolvedValue({ examples: { 'книгу': example } });
+
+    const result = await enrichSingleCardExample('Книгу', undefined, 'book');
+
+    expect(result).toEqual({
+      stressedForm: 'Книгу',
+      pos: '',
+      translations: ['book'],
+      example,
+    });
   });
 
   it('returns original dictionary when API returns no example', async () => {
