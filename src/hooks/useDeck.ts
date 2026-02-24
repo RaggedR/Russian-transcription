@@ -29,10 +29,7 @@ export function useDeck(userId: string | null) {
     saverRef.current = createDebouncedSave(
       userId,
       () => setSaveError(null),
-      (msg, failedCards) => {
-        void failedCards; // localStorage backup handled inside createDebouncedSave
-        setSaveError(msg);
-      },
+      (msg) => setSaveError(msg),
     );
     return () => {
       if (saverRef.current) saverRef.current.cleanup();
@@ -95,7 +92,8 @@ export function useDeck(userId: string | null) {
     setCards(prev => {
       const id = normalizeCardId(word);
       if (prev.some(c => c.id === id)) return prev; // duplicate
-      const next = [...prev, createCard(word, translation, sourceLanguage, dictionary)];
+      const newCard = createCard(word, translation, sourceLanguage, dictionary);
+      const next = [...prev, newCard];
       saveToFirestore(next);
 
       // Fire-and-forget: generate example sentence for the new card
@@ -104,7 +102,7 @@ export function useDeck(userId: string | null) {
           if (enrichedDict && enrichedDict !== dictionary) {
             setCards(current => {
               const updated = current.map(c =>
-                c.id === id ? { ...c, dictionary: enrichedDict } : c
+                c.id === newCard.id ? { ...c, dictionary: enrichedDict } : c
               );
               saveToFirestore(updated);
               return updated;

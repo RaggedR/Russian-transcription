@@ -72,6 +72,7 @@ cd e2e && npx playwright install chromium
 - `server/stripe.test.js` — Unit tests for Stripe subscription: status checks, middleware, checkout/portal sessions, webhook handling, cache invalidation
 - `server/dictionary.test.js` — Unit tests for OpenRussian dictionary: convertStress, lookupWord (noun/verb/adjective/other), lemma fallback, graceful no-op
 - `server/integration.test.js` — Mocks `media.js` + `dictionary.js`, tests all Express endpoints, SSE, session lifecycle, helmet headers, subscription endpoints
+- `tests/deck-persistence.test.ts` — Unit tests for deck persistence: localStorage load/save, Firestore load/migration, debounced save factory, cleanup
 - `tests/deck-enrichment.test.ts` — Unit tests for deck enrichment service: batch dictionary lookup, batch example generation, single-card example, cancellation, Sentry reporting
 - `e2e/tests/*.spec.ts` — Playwright E2E tests: app loading, video flow, text flow, demo flow, word popup, flashcard review, add-to-deck, settings features, subscription/paywall, security headers (CSP compliance), edge cases
 

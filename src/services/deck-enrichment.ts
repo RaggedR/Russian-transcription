@@ -53,7 +53,7 @@ export async function enrichMissingExamples(
 
   try {
     const BATCH_SIZE = 50;
-    let allExamples: Record<string, { russian: string; english: string } | null> = {};
+    const allExamples: Record<string, { russian: string; english: string } | null> = {};
     for (let i = 0; i < needsExamples.length; i += BATCH_SIZE) {
       if (signal?.cancelled) return cards;
       const batch = needsExamples.slice(i, i + BATCH_SIZE);
@@ -62,7 +62,7 @@ export async function enrichMissingExamples(
         '/api/generate-examples',
         { method: 'POST', body: JSON.stringify({ words }) },
       );
-      allExamples = { ...allExamples, ...examples };
+      Object.assign(allExamples, examples);
     }
     if (signal?.cancelled) return cards;
 

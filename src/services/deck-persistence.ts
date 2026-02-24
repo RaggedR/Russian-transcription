@@ -78,7 +78,7 @@ export async function loadFromFirestore(userId: string): Promise<SRSCard[]> {
 export function createDebouncedSave(
   userId: string,
   onSuccess: () => void,
-  onError: (msg: string, cards: SRSCard[]) => void,
+  onError: (msg: string) => void,
 ): { save: (cards: SRSCard[]) => void; cleanup: () => void } {
   let timer: ReturnType<typeof setTimeout> | null = null;
 
@@ -93,7 +93,7 @@ export function createDebouncedSave(
       } catch (err) {
         console.error('[deck-persistence] Firestore save failed:', err);
         Sentry.captureException(err, { tags: { operation: 'deck_save' } });
-        onError('Deck changes may not be saved — check your connection', cards);
+        onError('Deck changes may not be saved — check your connection');
         saveLocalBackup(cards);
       }
     }, DEBOUNCE_MS);

@@ -34,6 +34,10 @@ App.tsx
 
 4. **Persistence uses factory pattern** — `createDebouncedSave()` returns a `{ save, cleanup }` object. The `useDeck` hook recreates it when `userId` changes.
 
+### Testing
+
+Each layer has dedicated tests. Enrichment and persistence are tested in isolation with mocked API/Firestore; the orchestrator (`use-deck.test.tsx`) tests integration across layers. See the test files in [Assets](#assets) and `CLAUDE.md` for testing patterns (mock boundaries, E2E auth bypass, test isolation).
+
 ## Resources
 
 - [OpenRussian Dictionary](./openrussian-dictionary.md) — dictionary data source for enrichment
@@ -47,6 +51,7 @@ App.tsx
 - `src/utils/russian.ts` — shared Russian language utilities
 - `src/components/WordPopup.tsx` — translation popup (pure presentation)
 - `src/components/ReviewPanel.tsx` — flashcard review UI
+- `tests/deck-persistence.test.ts` — persistence tests
 - `tests/deck-enrichment.test.ts` — enrichment tests
 - `tests/sm2.test.ts` — algorithm tests
 - `tests/word-popup.test.tsx` — popup tests

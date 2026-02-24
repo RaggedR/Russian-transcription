@@ -74,7 +74,7 @@ export function TranscriptPanel({
 
   const isInFreqRange = useCallback((word: WordTimestamp): boolean => {
     if (!hasFreqRange) return false;
-    // Normalize ё→е on lemma too, since the corpus uses е-spellings
+    // ё→е for the lemma branch (normalizeRussianWord already handles it for word.word)
     const lookupWord = (word.lemma || normalizeRussianWord(word.word)).replace(/ё/g, 'е');
     if (!lookupWord) return false;
     const rank = wordFrequencies!.get(lookupWord);
