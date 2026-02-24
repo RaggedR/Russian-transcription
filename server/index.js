@@ -455,7 +455,7 @@ app.post('/api/enrich-deck', (req, res) => {
  * Accepts: { words: [string] }   (max 50)
  * Returns: { examples: { [word]: { russian: string, english: string } | null } }
  */
-app.post('/api/generate-examples', requireSubscription, requireBudget, async (req, res) => {
+app.post('/api/generate-examples', requireSubscription, async (req, res) => {
   const { words } = req.body;
 
   if (!words || !Array.isArray(words)) {
@@ -494,6 +494,11 @@ app.post('/api/generate-examples', requireSubscription, requireBudget, async (re
 
     let freshExamples = {};
     if (uncached.length > 0) {
+      // Only enforce budget when GPT will actually be called (cached requests are free)
+      let budgetOk = false;
+      requireBudget(req, res, () => { budgetOk = true; });
+      if (!budgetOk) return; // requireBudget already sent 429 response
+
       const response = await fetch('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
         headers: {
