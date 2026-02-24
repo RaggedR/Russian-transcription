@@ -148,15 +148,21 @@ describe('sm2 — learning phase (repetition === 0)', () => {
     expect(reviewMs).toBeLessThanOrEqual(fiveDaysMs + 1000);
   });
 
-  it('ease factor adjusts even in learning phase', () => {
+  it('ease factor stays at 2.5 during learning phase', () => {
     const again = sm2(card, 0);
-    expect(again.easeFactor).not.toBe(2.5);
-    expect(again.easeFactor).toBeLessThan(2.5);
+    expect(again.easeFactor).toBe(2.5);
+    const hard = sm2(card, 2);
+    expect(hard.easeFactor).toBe(2.5);
+    const good = sm2(card, 4);
+    expect(good.easeFactor).toBe(2.5);
+    const easy = sm2(card, 5);
+    expect(easy.easeFactor).toBe(2.5);
   });
 
-  it('ease factor never drops below 1.3', () => {
-    const c = makeCard({ easeFactor: 1.3 });
+  it('ease factor never drops below 1.3 (review phase)', () => {
+    const c = makeCard({ easeFactor: 1.3, repetition: 1, interval: 1 });
     const result = sm2(c, 0);
+    // After lapse, EF should be clamped at 1.3
     expect(result.easeFactor).toBe(1.3);
   });
 });
@@ -214,20 +220,19 @@ describe('sm2 — review phase (repetition > 0)', () => {
     expect(reviewedAt).toBeLessThanOrEqual(after);
   });
 
-  it('preserves word, translation, context fields', () => {
+  it('preserves word, translation, dictionary fields', () => {
+    const dict = { stressedForm: 'ми́р', pos: 'noun', translations: ['world', 'peace'] };
     const c = makeCard({
       repetition: 1,
       interval: 3,
       word: 'мир',
       translation: 'world',
-      context: 'Весь мир.',
-      contextTranslation: 'The whole world.',
+      dictionary: dict,
     });
     const result = sm2(c, 4);
     expect(result.word).toBe('мир');
     expect(result.translation).toBe('world');
-    expect(result.context).toBe('Весь мир.');
-    expect(result.contextTranslation).toBe('The whole world.');
+    expect(result.dictionary).toEqual(dict);
   });
 });
 
@@ -342,7 +347,7 @@ describe('sm2 — multi-review sequences', () => {
     expect(card.interval).toBeGreaterThan(prevInterval);
   });
 
-  it('repeated "Again" keeps card in learning with low ease', () => {
+  it('repeated "Again" keeps card in learning with unchanged EF', () => {
     let card = makeCard({ repetition: 0, interval: 0, easeFactor: 2.5 });
 
     for (let i = 0; i < 5; i++) {
@@ -351,7 +356,7 @@ describe('sm2 — multi-review sequences', () => {
 
     expect(card.repetition).toBe(0);
     expect(card.interval).toBe(0);
-    expect(card.easeFactor).toBe(1.3); // floored at minimum
+    expect(card.easeFactor).toBe(2.5); // EF unchanged during learning
   });
 
   it('lapse from review → re-graduate → continue growing', () => {
@@ -374,22 +379,25 @@ describe('sm2 — multi-review sequences', () => {
     expect(card.interval).toBeGreaterThanOrEqual(2);
   });
 
-  it('ease factor recovers after Easy ratings following Again', () => {
+  it('ease factor grows in review phase after stable learning', () => {
     let card = makeCard({ repetition: 0, interval: 0, easeFactor: 2.5 });
 
-    // Tank ease factor with Again
+    // Learning Again x3 — EF stays at 2.5 (no penalty during learning)
     card = sm2(card, 0);
     card = sm2(card, 0);
     card = sm2(card, 0);
-    const lowEase = card.easeFactor;
+    expect(card.easeFactor).toBe(2.5);
 
-    // Graduate and keep hitting Easy
+    // Graduate with Good
     card = sm2(card, 4);
+    expect(card.easeFactor).toBe(2.5); // still learning → review transition
+
+    // Easy reviews in review phase increase EF
     card = sm2(card, 5);
     card = sm2(card, 5);
     card = sm2(card, 5);
 
-    expect(card.easeFactor).toBeGreaterThan(lowEase);
+    expect(card.easeFactor).toBeGreaterThan(2.5);
   });
 
   it('interval grows exponentially with consistent Good ratings', () => {

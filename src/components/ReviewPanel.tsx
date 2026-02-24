@@ -4,6 +4,7 @@ import { sm2, previewInterval } from '../utils/sm2';
 import type { IntervalPreview } from '../utils/sm2';
 import type { DictionaryEntry } from '../types';
 import { RichCardBack } from './RichCardBack';
+import { speak } from '../utils/russian';
 
 interface ReviewPanelProps {
   isOpen: boolean;
@@ -11,16 +12,6 @@ interface ReviewPanelProps {
   dueCards: SRSCard[];
   onReview: (id: string, rating: SRSRating) => void;
   onRemove: (id: string) => void;
-}
-
-function speak(text: string, language: string) {
-  if (!('speechSynthesis' in window)) return;
-  window.speechSynthesis.cancel();
-  const utterance = new SpeechSynthesisUtterance(text);
-  const langMap: Record<string, string> = { th: 'th-TH', fr: 'fr-FR', ru: 'ru-RU' };
-  utterance.lang = langMap[language] || 'en-US';
-  utterance.rate = 0.9;
-  window.speechSynthesis.speak(utterance);
 }
 
 // Detect if text contains Cyrillic characters (i.e. is Russian)

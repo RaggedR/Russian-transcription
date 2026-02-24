@@ -72,6 +72,8 @@ cd e2e && npx playwright install chromium
 - `server/stripe.test.js` — Unit tests for Stripe subscription: status checks, middleware, checkout/portal sessions, webhook handling, cache invalidation
 - `server/dictionary.test.js` — Unit tests for OpenRussian dictionary: convertStress, lookupWord (noun/verb/adjective/other), lemma fallback, graceful no-op
 - `server/integration.test.js` — Mocks `media.js` + `dictionary.js`, tests all Express endpoints, SSE, session lifecycle, helmet headers, subscription endpoints
+- `tests/deck-persistence.test.ts` — Unit tests for deck persistence: localStorage load/save, Firestore load/migration, debounced save factory, cleanup
+- `tests/deck-enrichment.test.ts` — Unit tests for deck enrichment service: batch dictionary lookup, batch example generation, single-card example, cancellation, Sentry reporting
 - `e2e/tests/*.spec.ts` — Playwright E2E tests: app loading, video flow, text flow, demo flow, word popup, flashcard review, add-to-deck, settings features, subscription/paywall, security headers (CSP compliance), edge cases
 
 **Testing patterns:**
@@ -257,21 +259,26 @@ Express.js on port 3001 (local) / `PORT` env var (Cloud Run). Key files:
 
 ### SRS Flashcard System
 
-- `src/hooks/useDeck.ts` — Deck state with Firestore persistence (debounced 500ms writes). Accepts `userId` from `useAuth`. Falls back to localStorage if Firestore is unavailable. Migrates existing localStorage data to Firestore on first load.
+Layered architecture: `useDeck` (orchestrator) → `deck-persistence` (IO) + `deck-enrichment` (API) + `sm2` (algorithm) + `russian` (shared utils). See `CLAUDE_DOCS/deck-architecture.md` for full details.
+
+- `src/hooks/useDeck.ts` — Thin orchestrator: React state, card CRUD, coordinates persistence and enrichment. Fire-and-forget example generation on `addCard`.
+- `src/services/deck-persistence.ts` — Firestore load/save (debounced 500ms), localStorage fallback/migration. Accepts `userId` from `useAuth`.
+- `src/services/deck-enrichment.ts` — Batch dictionary lookup (`/api/enrich-deck`), batch example generation (`/api/generate-examples`), single-card example at add time. All errors reported to Sentry.
+- `src/utils/sm2.ts` — SM-2 spaced repetition algorithm with Anki-like learning steps (1min/5min) and graduated review intervals. Ease factor only updated during review phase (not learning).
+- `src/utils/russian.ts` — Shared `normalizeRussianWord()` (dedup/frequency) and `speak()` (Web Speech API).
+- `src/components/WordPopup.tsx` — Pure presentation: clicking "Add to deck" synchronously calls `onAddToDeck`. No API calls.
+- `src/components/ReviewPanel.tsx` — Flashcard review UI with keyboard shortcuts (1-4 for ratings, Space/Enter for show/good).
 - `src/hooks/useAuth.ts` — Google Sign-In via `signInWithPopup` + `GoogleAuthProvider`. Tracks state via `onAuthStateChanged`. Returns `{ userId, user, isLoading, signInWithGoogle, signOut }`. E2E test bypass: build-time `VITE_E2E_TEST` selects stateful `useAuthE2E` (supports sign-out). Tests can set `window.__E2E_NO_AUTH = true` via `addInitScript` to start logged-out.
 - `src/firebase-auth.ts` — Firebase app + auth initialization (eager, loaded at boot). Config from `VITE_FIREBASE_*` env vars.
-- `src/firebase-db.ts` — Firestore initialization (lazy, dynamically imported by `useDeck.ts` to defer ~107KB gz).
+- `src/firebase-db.ts` — Firestore initialization (lazy, dynamically imported by `deck-persistence.ts` to defer ~107KB gz).
 - `src/firebase.ts` — Re-export barrel (`auth` + `db`) for backwards compatibility (test mocks use this path).
-- `src/utils/sm2.ts` — SM-2 spaced repetition algorithm with Anki-like learning steps (1min/5min) and graduated review intervals.
-- `src/components/ReviewPanel.tsx` — Flashcard review UI with keyboard shortcuts (1-4 for ratings, Space/Enter for show/good).
 - `firestore.rules` — Security rules: `decks/{userId}` read/write by matching `auth.uid` (write requires `cards` is list); `usage/{userId}` read/delete by matching `auth.uid`; `subscriptions/{userId}` read/delete by matching `auth.uid`. Deploy with `firebase deploy --only firestore:rules`.
-- Sentence extraction: scans the words array for sentence-ending punctuation (`.!?…`) to extract only the containing sentence as flashcard context, not the full Whisper segment.
 
 ### Word Frequency Highlighting
 
 - `public/russian-word-frequencies.json` — ~20K Russian lemmas from the Russian National Corpus (Lyashevskaya & Sharoff), sorted by frequency rank
 - `TranscriptPanel` underlines words in a configurable frequency rank range (e.g., rank 500–1000)
-- Normalization: ё→е for both frequency lookup and card deduplication (`normalizeCardId` in `sm2.ts`)
+- Normalization: ё→е for both frequency lookup and card deduplication (`normalizeRussianWord` in `russian.ts`, re-exported as `normalizeCardId` by `sm2.ts`)
 
 ### Demo System
 

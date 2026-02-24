@@ -1,6 +1,6 @@
-import { useCallback, useState } from 'react';
+import { useCallback } from 'react';
 import type { Translation, DictionaryEntry } from '../types';
-import { apiRequest } from '../services/api';
+import { speak } from '../utils/russian';
 
 interface WordPopupProps {
   translation: Translation | null;
@@ -12,22 +12,6 @@ interface WordPopupProps {
   isInDeck?: boolean;
 }
 
-function speak(text: string, language: string) {
-  if (!('speechSynthesis' in window)) return;
-
-  window.speechSynthesis.cancel();
-  const utterance = new SpeechSynthesisUtterance(text);
-  // Map language codes to speech synthesis language codes
-  const langMap: Record<string, string> = {
-    th: 'th-TH',
-    fr: 'fr-FR',
-    ru: 'ru-RU',
-  };
-  utterance.lang = langMap[language] || 'en-US';
-  utterance.rate = 0.9;
-  window.speechSynthesis.speak(utterance);
-}
-
 export function WordPopup({
   translation,
   isLoading,
@@ -37,37 +21,15 @@ export function WordPopup({
   onAddToDeck,
   isInDeck,
 }: WordPopupProps) {
-  const [isAddingToDeck, setIsAddingToDeck] = useState(false);
-
   const handleSpeak = useCallback(() => {
     if (translation) {
       speak(translation.word, translation.sourceLanguage);
     }
   }, [translation]);
 
-  const handleAddToDeck = useCallback(async () => {
+  const handleAddToDeck = useCallback(() => {
     if (!translation || !onAddToDeck) return;
-    setIsAddingToDeck(true);
-    try {
-      let dictionary = translation.dictionary;
-      if (dictionary) {
-        // Generate an example sentence at card creation time
-        const { examples } = await apiRequest<{ examples: Record<string, { russian: string; english: string } | null> }>(
-          '/api/generate-examples',
-          { method: 'POST', body: JSON.stringify({ words: [translation.word] }) },
-        );
-        const example = examples[translation.word];
-        if (example) {
-          dictionary = { ...dictionary, example };
-        }
-      }
-      onAddToDeck(translation.word, translation.translation, translation.sourceLanguage, dictionary);
-    } catch {
-      // Still add card without example if generation fails — dictionary data is kept
-      onAddToDeck(translation.word, translation.translation, translation.sourceLanguage, translation.dictionary);
-    } finally {
-      setIsAddingToDeck(false);
-    }
+    onAddToDeck(translation.word, translation.translation, translation.sourceLanguage, translation.dictionary);
   }, [translation, onAddToDeck]);
 
   if (!position) return null;
@@ -152,25 +114,12 @@ export function WordPopup({
                 ) : (
                   <button
                     onClick={handleAddToDeck}
-                    disabled={isAddingToDeck}
-                    className="inline-flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800 transition-colors disabled:opacity-50"
+                    className="inline-flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800 transition-colors"
                   >
-                    {isAddingToDeck ? (
-                      <>
-                        <svg className="animate-spin w-3.5 h-3.5" viewBox="0 0 24 24">
-                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                        </svg>
-                        Adding...
-                      </>
-                    ) : (
-                      <>
-                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-                        </svg>
-                        Add to deck
-                      </>
-                    )}
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                    </svg>
+                    Add to deck
                   </button>
                 )}
               </div>
