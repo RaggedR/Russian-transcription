@@ -168,6 +168,7 @@ Express.js on port 3001 (local) / `PORT` env var (Cloud Run). Key files:
 - `storage/url-cache.js` — URL→session mapping (6h TTL, per-user): `getCachedSession`, `cacheSessionUrl`
 - `storage/extraction-cache.js` — yt-dlp info cache in GCS (2h TTL): `getCachedExtraction`, `cacheExtraction`
 - `storage/translation-cache.js` — Translation LRU cache (max 10K entries)
+- `storage/example-cache.js` — Example sentence LRU cache (max 10K entries, keyed by lowercase word)
 - `storage/session-repository.js` — Session CRUD, LRU memory cache (50), GCS persistence, cleanup, URL cache rebuild
 - `progress.js` — SSE client management (`progressClients` Map), `sendProgress()`/`createProgressCallback()` helpers, terminal progress rendering
 - `chunking.js` — Splits transcripts at natural pauses (>0.5s gaps), targets ~3min chunks
@@ -261,7 +262,7 @@ Express.js on port 3001 (local) / `PORT` env var (Cloud Run). Key files:
 
 Layered architecture: `useDeck` (orchestrator) → `deck-persistence` (IO) + `deck-enrichment` (API) + `sm2` (algorithm) + `russian` (shared utils). See `CLAUDE_DOCS/deck-architecture.md` for full details.
 
-- `src/hooks/useDeck.ts` — Thin orchestrator: React state, card CRUD, coordinates persistence and enrichment. Fire-and-forget example generation on `addCard`.
+- `src/hooks/useDeck.ts` — Thin orchestrator: React state, card CRUD, coordinates persistence and enrichment. Awaits example generation on `addCard` (card enters state already enriched).
 - `src/services/deck-persistence.ts` — Firestore load/save (debounced 500ms), localStorage fallback/migration. Accepts `userId` from `useAuth`.
 - `src/services/deck-enrichment.ts` — Batch dictionary lookup (`/api/enrich-deck`), batch example generation (`/api/generate-examples`), single-card example at add time. All errors reported to Sentry.
 - `src/utils/sm2.ts` — SM-2 spaced repetition algorithm with Anki-like learning steps (1min/5min) and graduated review intervals. Ease factor only updated during review phase (not learning).

@@ -10,7 +10,7 @@ interface TranscriptPanelProps {
   config: TranslatorConfig;
   wordFrequencies?: Map<string, number>;
   isLoading?: boolean;
-  onAddToDeck?: (word: string, translation: string, sourceLanguage: string, dictionary?: DictionaryEntry) => void;
+  onAddToDeck?: (word: string, translation: string, sourceLanguage: string, dictionary?: DictionaryEntry) => void | Promise<void>;
   isWordInDeck?: (word: string) => boolean;
 }
 

@@ -88,34 +88,27 @@ export function useDeck(userId: string | null) {
   const dueCards = useMemo(() => getDueCardsFromAll(cards), [cards]);
   const dueCount = dueCards.length;
 
-  const addCard = useCallback((word: string, translation: string, sourceLanguage: string, dictionary?: DictionaryEntry) => {
+  const addCard = useCallback(async (word: string, translation: string, sourceLanguage: string, dictionary?: DictionaryEntry): Promise<void> => {
     const id = normalizeCardId(word);
-    let wasAdded = false;
+
+    // Enrich BEFORE adding — await the API call so the card enters state with an example
+    let enrichedDictionary = dictionary;
+    if (!dictionary?.example) {
+      try {
+        const result = await enrichSingleCardExample(word, dictionary, translation);
+        if (result) enrichedDictionary = result;
+      } catch {
+        // Graceful degradation — add card without example
+      }
+    }
 
     setCards(prev => {
       if (prev.some(c => c.id === id)) return prev; // duplicate
-      wasAdded = true;
-      const newCard = createCard(word, translation, sourceLanguage, dictionary);
+      const newCard = createCard(word, translation, sourceLanguage, enrichedDictionary);
       const next = [...prev, newCard];
       saveToFirestore(next);
       return next;
     });
-
-    // Fire-and-forget: generate example sentence for the new card (outside state updater)
-    if (wasAdded && !dictionary?.example) {
-      enrichSingleCardExample(word, dictionary, translation).then(enrichedDict => {
-        if (enrichedDict && enrichedDict !== dictionary) {
-          setCards(current => {
-            if (!current.some(c => c.id === id)) return current; // card was removed
-            const updated = current.map(c =>
-              c.id === id ? { ...c, dictionary: enrichedDict } : c
-            );
-            saveToFirestore(updated);
-            return updated;
-          });
-        }
-      }).catch(console.warn);
-    }
   }, [saveToFirestore]);
 
   const removeCard = useCallback((id: string) => {

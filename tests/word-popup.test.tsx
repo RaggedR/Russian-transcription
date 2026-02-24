@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, act } from '@testing-library/react';
 import { WordPopup } from '../src/components/WordPopup';
 import type { Translation } from '../src/types';
 
@@ -108,11 +108,13 @@ describe('WordPopup', () => {
     expect(screen.queryByText('In deck')).not.toBeInTheDocument();
   });
 
-  it('calls onAddToDeck synchronously with word, translation, and dictionary', () => {
-    const onAddToDeck = vi.fn();
+  it('calls onAddToDeck with word, translation, and dictionary', async () => {
+    const onAddToDeck = vi.fn().mockResolvedValue(undefined);
     renderPopup({ onAddToDeck, isInDeck: false });
 
-    fireEvent.click(screen.getByText('Add to deck'));
+    await act(async () => {
+      fireEvent.click(screen.getByText('Add to deck'));
+    });
 
     expect(onAddToDeck).toHaveBeenCalledTimes(1);
     expect(onAddToDeck).toHaveBeenCalledWith(
@@ -123,21 +125,45 @@ describe('WordPopup', () => {
     );
   });
 
-  it('calls onAddToDeck with undefined dictionary when no dictionary data', () => {
+  it('calls onAddToDeck with undefined dictionary when no dictionary data', async () => {
     const noDictTranslation: Translation = {
       word: 'привет',
       translation: 'hello',
       sourceLanguage: 'ru',
     };
-    const onAddToDeck = vi.fn();
+    const onAddToDeck = vi.fn().mockResolvedValue(undefined);
     renderPopup({
       onAddToDeck,
       isInDeck: false,
       translation: noDictTranslation,
     });
 
-    fireEvent.click(screen.getByText('Add to deck'));
+    await act(async () => {
+      fireEvent.click(screen.getByText('Add to deck'));
+    });
 
     expect(onAddToDeck).toHaveBeenCalledWith('привет', 'hello', 'ru', undefined);
+  });
+
+  it('shows "Adding..." spinner while onAddToDeck promise is pending', async () => {
+    let resolveAdd!: () => void;
+    const addPromise = new Promise<void>(resolve => { resolveAdd = resolve; });
+    const onAddToDeck = vi.fn().mockReturnValue(addPromise);
+
+    renderPopup({ onAddToDeck, isInDeck: false });
+
+    // Click "Add to deck"
+    fireEvent.click(screen.getByText('Add to deck'));
+
+    // Should show "Adding..." spinner
+    expect(screen.getByText('Adding...')).toBeInTheDocument();
+    expect(screen.queryByText('Add to deck')).not.toBeInTheDocument();
+
+    // Resolve the promise
+    await act(async () => { resolveAdd(); });
+
+    // Should go back to showing "Add to deck" (not "In deck" — that depends on isInDeck prop)
+    expect(screen.queryByText('Adding...')).not.toBeInTheDocument();
+    expect(screen.getByText('Add to deck')).toBeInTheDocument();
   });
 });

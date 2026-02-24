@@ -59,8 +59,13 @@ describe('useDeck', () => {
     // Default: Firestore returns empty doc
     mockGetDoc.mockResolvedValue(firestoreSnap(null));
     mockSetDoc.mockResolvedValue(undefined);
-    // Default: enrich-deck returns empty entries
-    mockApiRequest.mockResolvedValue({ entries: {} });
+    // Default: handle both enrich-deck and generate-examples routes
+    mockApiRequest.mockImplementation((url: string) => {
+      if (typeof url === 'string' && url.includes('generate-examples')) {
+        return Promise.resolve({ examples: {} });
+      }
+      return Promise.resolve({ entries: {} });
+    });
     // Clear localStorage store
     Object.keys(localStorageStore).forEach(k => delete localStorageStore[k]);
   });
@@ -155,8 +160,8 @@ describe('useDeck', () => {
     await act(async () => { await vi.runAllTimersAsync(); });
 
     const dict = { stressedForm: 'приве́т', pos: 'other', translations: ['hello'] };
-    act(() => {
-      result.current.addCard('Привет', 'Hello', 'ru', dict);
+    await act(async () => {
+      await result.current.addCard('Привет', 'Hello', 'ru', dict);
     });
 
     expect(result.current.cards).toHaveLength(1);
@@ -169,9 +174,9 @@ describe('useDeck', () => {
     const { result } = renderHook(() => useDeck('user-1'));
     await act(async () => { await vi.runAllTimersAsync(); });
 
-    act(() => {
-      result.current.addCard('Привет', 'Hello', 'ru');
-      result.current.addCard('привет', 'Hi', 'ru'); // same normalized id
+    await act(async () => {
+      await result.current.addCard('Привет', 'Hello', 'ru');
+      await result.current.addCard('привет', 'Hi', 'ru'); // same normalized id
     });
 
     expect(result.current.cards).toHaveLength(1);
@@ -181,12 +186,88 @@ describe('useDeck', () => {
     const { result } = renderHook(() => useDeck('user-1'));
     await act(async () => { await vi.runAllTimersAsync(); });
 
-    act(() => {
-      result.current.addCard('ёж', 'hedgehog', 'ru');
-      result.current.addCard('еж', 'hedgehog', 'ru');
+    await act(async () => {
+      await result.current.addCard('ёж', 'hedgehog', 'ru');
+      await result.current.addCard('еж', 'hedgehog', 'ru');
     });
 
     expect(result.current.cards).toHaveLength(1);
+  });
+
+  it('addCard enriches card with example before adding to state', async () => {
+    vi.useRealTimers();
+    const exampleData = { russian: 'Привет, как дела?', english: 'Hello, how are you?' };
+    mockApiRequest.mockImplementation((url: string) => {
+      if (typeof url === 'string' && url.includes('generate-examples')) {
+        return Promise.resolve({ examples: { 'Привет': exampleData } });
+      }
+      return Promise.resolve({ entries: {} });
+    });
+    mockGetDoc.mockResolvedValue(firestoreSnap(null));
+
+    const { result } = renderHook(() => useDeck('user-sync'));
+    await act(async () => { await new Promise(r => setTimeout(r, 50)); });
+
+    await act(async () => {
+      await result.current.addCard('Привет', 'Hello', 'ru');
+    });
+
+    // Card should already have the example — no stale snapshot issue
+    expect(result.current.cards).toHaveLength(1);
+    expect(result.current.cards[0].dictionary?.example).toEqual(exampleData);
+    vi.useFakeTimers();
+  });
+
+  it('addCard adds card without example on enrichment failure', async () => {
+    vi.useRealTimers();
+    mockApiRequest.mockImplementation((url: string) => {
+      if (typeof url === 'string' && url.includes('generate-examples')) {
+        return Promise.reject(new Error('GPT error'));
+      }
+      return Promise.resolve({ entries: {} });
+    });
+    mockGetDoc.mockResolvedValue(firestoreSnap(null));
+
+    const { result } = renderHook(() => useDeck('user-fail'));
+    await act(async () => { await new Promise(r => setTimeout(r, 50)); });
+
+    await act(async () => {
+      await result.current.addCard('Мир', 'World', 'ru');
+    });
+
+    // Card is added despite enrichment failure
+    expect(result.current.cards).toHaveLength(1);
+    expect(result.current.cards[0].word).toBe('Мир');
+    expect(result.current.cards[0].dictionary?.example).toBeUndefined();
+    vi.useFakeTimers();
+  });
+
+  it('addCard skips enrichment when dictionary already has example', async () => {
+    vi.useRealTimers();
+    const dictWithExample = {
+      stressedForm: 'приве́т', pos: 'other', translations: ['hello'],
+      example: { russian: 'Привет, мир!', english: 'Hello, world!' },
+    };
+    mockApiRequest.mockImplementation(() => {
+      return Promise.resolve({ entries: {} });
+    });
+    mockGetDoc.mockResolvedValue(firestoreSnap(null));
+
+    const { result } = renderHook(() => useDeck('user-has-example'));
+    await act(async () => { await new Promise(r => setTimeout(r, 50)); });
+
+    await act(async () => {
+      await result.current.addCard('Привет', 'Hello', 'ru', dictWithExample);
+    });
+
+    expect(result.current.cards).toHaveLength(1);
+    expect(result.current.cards[0].dictionary?.example).toEqual(dictWithExample.example);
+    // generate-examples should NOT have been called
+    const exampleCalls = mockApiRequest.mock.calls.filter(
+      (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('generate-examples')
+    );
+    expect(exampleCalls).toHaveLength(0);
+    vi.useFakeTimers();
   });
 
   // ─── removeCard ──────────────────────────────────────────────
@@ -195,8 +276,8 @@ describe('useDeck', () => {
     const { result } = renderHook(() => useDeck('user-1'));
     await act(async () => { await vi.runAllTimersAsync(); });
 
-    act(() => {
-      result.current.addCard('Слово', 'Word', 'ru');
+    await act(async () => {
+      await result.current.addCard('Слово', 'Word', 'ru');
     });
     const cardId = result.current.cards[0].id;
 
@@ -211,8 +292,8 @@ describe('useDeck', () => {
     const { result } = renderHook(() => useDeck('user-1'));
     await act(async () => { await vi.runAllTimersAsync(); });
 
-    act(() => {
-      result.current.addCard('Слово', 'Word', 'ru');
+    await act(async () => {
+      await result.current.addCard('Слово', 'Word', 'ru');
     });
 
     act(() => {
@@ -228,8 +309,8 @@ describe('useDeck', () => {
     const { result } = renderHook(() => useDeck('user-1'));
     await act(async () => { await vi.runAllTimersAsync(); });
 
-    act(() => {
-      result.current.addCard('Книга', 'Book', 'ru');
+    await act(async () => {
+      await result.current.addCard('Книга', 'Book', 'ru');
     });
     const cardId = result.current.cards[0].id;
 
@@ -248,9 +329,9 @@ describe('useDeck', () => {
     const { result } = renderHook(() => useDeck('user-1'));
     await act(async () => { await vi.runAllTimersAsync(); });
 
-    act(() => {
-      result.current.addCard('Один', 'One', 'ru');
-      result.current.addCard('Два', 'Two', 'ru');
+    await act(async () => {
+      await result.current.addCard('Один', 'One', 'ru');
+      await result.current.addCard('Два', 'Two', 'ru');
     });
 
     const card1Id = result.current.cards[0].id;
@@ -271,8 +352,8 @@ describe('useDeck', () => {
     const { result } = renderHook(() => useDeck('user-1'));
     await act(async () => { await vi.runAllTimersAsync(); });
 
-    act(() => {
-      result.current.addCard('Привет', 'Hello', 'ru');
+    await act(async () => {
+      await result.current.addCard('Привет', 'Hello', 'ru');
     });
 
     expect(result.current.isWordInDeck('привет')).toBe(true);
@@ -295,8 +376,8 @@ describe('useDeck', () => {
     // Reset mock after the initial load's setDoc calls (migration, etc.)
     mockSetDoc.mockClear();
 
-    act(() => {
-      result.current.addCard('Тест', 'Test', 'ru');
+    await act(async () => {
+      await result.current.addCard('Тест', 'Test', 'ru');
     });
 
     // Not called immediately
@@ -317,11 +398,11 @@ describe('useDeck', () => {
     );
   });
 
-  it('does not save to Firestore when no userId', () => {
+  it('does not save to Firestore when no userId', async () => {
     const { result } = renderHook(() => useDeck(null));
 
-    act(() => {
-      result.current.addCard('Тест', 'Test', 'ru');
+    await act(async () => {
+      await result.current.addCard('Тест', 'Test', 'ru');
     });
 
     vi.advanceTimersByTime(1000);
@@ -335,8 +416,8 @@ describe('useDeck', () => {
     const { result } = renderHook(() => useDeck('user-1'));
     await act(async () => { await vi.runAllTimersAsync(); });
 
-    act(() => {
-      result.current.addCard('Слово', 'Word', 'ru');
+    await act(async () => {
+      await result.current.addCard('Слово', 'Word', 'ru');
     });
 
     // Newly added card has nextReviewDate ≈ now, which is "due"
@@ -355,8 +436,8 @@ describe('useDeck', () => {
     // Reset mocks after initial load
     mockSetDoc.mockRejectedValue(new Error('Firestore write failed'));
 
-    act(() => {
-      result.current.addCard('Ошибка', 'Error', 'ru');
+    await act(async () => {
+      await result.current.addCard('Ошибка', 'Error', 'ru');
     });
 
     expect(result.current.saveError).toBeNull(); // Not set yet (debounced)
@@ -381,8 +462,8 @@ describe('useDeck', () => {
     mockCaptureException.mockClear();
     mockSetDoc.mockRejectedValue(error);
 
-    act(() => {
-      result.current.addCard('Sentry', 'Test', 'ru');
+    await act(async () => {
+      await result.current.addCard('Sentry', 'Test', 'ru');
     });
 
     await act(async () => {
@@ -405,8 +486,8 @@ describe('useDeck', () => {
     mockSetDoc.mockRejectedValue(new Error('Firestore write failed'));
     mockLocalStorage.setItem.mockClear();
 
-    act(() => {
-      result.current.addCard('Fallback', 'Test', 'ru');
+    await act(async () => {
+      await result.current.addCard('Fallback', 'Test', 'ru');
     });
 
     await act(async () => {
@@ -436,8 +517,8 @@ describe('useDeck', () => {
 
     mockSetDoc.mockRejectedValue(new Error('fail'));
 
-    act(() => {
-      result.current.addCard('Manual', 'Test', 'ru');
+    await act(async () => {
+      await result.current.addCard('Manual', 'Test', 'ru');
     });
 
     await act(async () => {
