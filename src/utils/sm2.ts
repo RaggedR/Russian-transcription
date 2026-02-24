@@ -1,5 +1,5 @@
 import type { SRSCard, SRSRating, DictionaryEntry } from '../types';
-import { normalizeRussianWord } from './russian';
+import { normalizeRussianWord, cleanWord } from './russian';
 
 // Delegate to shared normalizeRussianWord for card ID deduplication.
 export function normalizeCardId(word: string): string {
@@ -7,9 +7,10 @@ export function normalizeCardId(word: string): string {
 }
 
 export function createCard(word: string, translation: string, sourceLanguage: string, dictionary?: DictionaryEntry): SRSCard {
+  const cleaned = cleanWord(word);
   return {
     id: normalizeCardId(word),
-    word,
+    word: cleaned,
     translation,
     sourceLanguage,
     dictionary,

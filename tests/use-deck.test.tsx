@@ -367,6 +367,51 @@ describe('useDeck', () => {
     expect(result.current.isWordInDeck('неизвестно')).toBe(false);
   });
 
+  // ─── Dirty word cleaning ─────────────────────────────────────
+
+  it('strips leading spaces and trailing punctuation from word on addCard', async () => {
+    const { result } = renderHook(() => useDeck('user-1'));
+    await act(async () => { await vi.runAllTimersAsync(); });
+
+    await act(async () => {
+      await result.current.addCard(' неожиданно', 'unexpectedly', 'ru');
+    });
+    expect(result.current.cards[0].word).toBe('неожиданно');
+  });
+
+  it('strips trailing period and comma from word', async () => {
+    const { result } = renderHook(() => useDeck('user-1'));
+    await act(async () => { await vi.runAllTimersAsync(); });
+
+    await act(async () => {
+      await result.current.addCard(' мозга","', 'brain', 'ru');
+    });
+    expect(result.current.cards[0].word).toBe('мозга');
+  });
+
+  it('cleans dirty words from Firestore on load', async () => {
+    const dirtyCards = [
+      {
+        id: 'неожиданно',
+        word: ' неожиданно',
+        translation: 'unexpectedly',
+        sourceLanguage: 'ru',
+        easeFactor: 2.5,
+        interval: 0,
+        repetition: 0,
+        nextReviewDate: new Date().toISOString(),
+        addedAt: new Date().toISOString(),
+        lastReviewedAt: null,
+      },
+    ];
+    mockGetDoc.mockResolvedValue(firestoreSnap({ cards: dirtyCards }));
+
+    const { result } = renderHook(() => useDeck('user-1'));
+    await act(async () => { await vi.runAllTimersAsync(); });
+
+    expect(result.current.cards[0].word).toBe('неожиданно');
+  });
+
   // ─── Firestore persistence (debounced) ───────────────────────
 
   it('saves to Firestore after 500ms debounce on addCard', async () => {
