@@ -40,6 +40,15 @@ export async function enrichMissingDictionary(
   }
 }
 
+/** Create a minimal DictionaryEntry to hold an example when dictionary lookup failed. */
+function createMinimalDictionary(
+  word: string,
+  translation: string,
+  example: { russian: string; english: string },
+): DictionaryEntry {
+  return { stressedForm: word, pos: '', translations: [translation], example };
+}
+
 /**
  * Batch example sentence generation for cards missing examples.
  * Works regardless of whether cards have dictionary data — creates minimal
@@ -75,16 +84,7 @@ export async function enrichMissingExamples(
         if (c.dictionary) {
           return { ...c, dictionary: { ...c.dictionary, example } };
         }
-        // Create minimal dictionary entry to hold the example
-        return {
-          ...c,
-          dictionary: {
-            stressedForm: c.word,
-            pos: '',
-            translations: [c.translation],
-            example,
-          },
-        };
+        return { ...c, dictionary: createMinimalDictionary(c.word, c.translation, example) };
       }
       return c;
     });
@@ -114,13 +114,7 @@ export async function enrichSingleCardExample(
       if (dictionary) {
         return { ...dictionary, example };
       }
-      // Create minimal dictionary entry to hold the example
-      return {
-        stressedForm: word,
-        pos: '',
-        translations: translation ? [translation] : [],
-        example,
-      };
+      return createMinimalDictionary(word, translation ?? '', example);
     }
     return dictionary;
   } catch (err) {

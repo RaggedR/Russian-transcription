@@ -90,9 +90,11 @@ export function useDeck(userId: string | null) {
 
   const addCard = useCallback((word: string, translation: string, sourceLanguage: string, dictionary?: DictionaryEntry) => {
     const id = normalizeCardId(word);
+    let wasAdded = false;
 
     setCards(prev => {
       if (prev.some(c => c.id === id)) return prev; // duplicate
+      wasAdded = true;
       const newCard = createCard(word, translation, sourceLanguage, dictionary);
       const next = [...prev, newCard];
       saveToFirestore(next);
@@ -100,7 +102,7 @@ export function useDeck(userId: string | null) {
     });
 
     // Fire-and-forget: generate example sentence for the new card (outside state updater)
-    if (!dictionary?.example) {
+    if (wasAdded && !dictionary?.example) {
       enrichSingleCardExample(word, dictionary, translation).then(enrichedDict => {
         if (enrichedDict && enrichedDict !== dictionary) {
           setCards(current => {
@@ -112,7 +114,7 @@ export function useDeck(userId: string | null) {
             return updated;
           });
         }
-      });
+      }).catch(console.warn);
     }
   }, [saveToFirestore]);
 
