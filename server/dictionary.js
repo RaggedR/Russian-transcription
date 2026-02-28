@@ -106,7 +106,8 @@ function addInflections(reverseMap, normalizedBare, row, columns) {
   for (const col of columns) {
     const raw = row[col];
     if (!raw) continue;
-    // Some cells contain comma-separated alternates (e.g. "краси'вый, краси'вого")
+    // OpenRussian inflection columns use comma-separated alternates only
+    // (e.g. "краси'вый, краси'вого"), unlike translations which also use semicolons.
     const forms = raw.split(',');
     for (const form of forms) {
       const stripped = form.trim().replace(/'/g, '');
@@ -115,6 +116,8 @@ function addInflections(reverseMap, normalizedBare, row, columns) {
       // Don't overwrite: first entry wins (bare form itself is already in main index)
       if (normalized !== normalizedBare && !reverseMap.has(normalized)) {
         reverseMap.set(normalized, normalizedBare);
+      } else if (normalized !== normalizedBare && reverseMap.get(normalized) !== normalizedBare) {
+        console.debug(`[Dictionary] inflection collision: "${normalized}" → "${normalizedBare}" (already → "${reverseMap.get(normalized)}")`);
       }
     }
   }
