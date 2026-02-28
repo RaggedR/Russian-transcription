@@ -144,6 +144,67 @@ describe('lookupWord — others', () => {
   });
 });
 
+// ── lookupWord — inflection index (no lemma needed) ─────────────────
+
+describe('lookupWord — inflection index', () => {
+  it('finds noun "книга" via accusative form "книгу"', () => {
+    const entry = lookupWord('книгу');
+    expect(entry).not.toBeNull();
+    expect(entry.pos).toBe('noun');
+    expect(entry.stressedForm).toBe('кни\u0301га');
+    expect(entry.declension.sg.acc).toBe('кни\u0301гу');
+  });
+
+  it('finds verb "говорить" via 3rd person sg "говорит"', () => {
+    const entry = lookupWord('говорит');
+    expect(entry).not.toBeNull();
+    expect(entry.pos).toBe('verb');
+    expect(entry.stressedForm).toBe('говори\u0301ть');
+    expect(entry.conjugation.present.sg3).toBe('говори\u0301т');
+  });
+
+  it('finds adjective "красивый" via feminine nom "красивая"', () => {
+    const entry = lookupWord('красивая');
+    expect(entry).not.toBeNull();
+    expect(entry.pos).toBe('adjective');
+    expect(entry.translations).toContain('beautiful');
+    expect(entry.adjectiveForms.long.f).toBe('краси\u0301вая');
+  });
+
+  it('finds "человек" via irregular plural gen "людей"', () => {
+    const entry = lookupWord('людей');
+    expect(entry).not.toBeNull();
+    expect(entry.pos).toBe('noun');
+    expect(entry.stressedForm).toBe('челове\u0301к');
+    expect(entry.declension.pl.gen).toBe('люде\u0301й');
+  });
+
+  it('finds noun via genitive plural "книг"', () => {
+    const entry = lookupWord('книг');
+    expect(entry).not.toBeNull();
+    expect(entry.pos).toBe('noun');
+    expect(entry.stressedForm).toBe('кни\u0301га');
+  });
+
+  it('finds verb via past feminine "сказала"', () => {
+    const entry = lookupWord('сказала');
+    expect(entry).not.toBeNull();
+    expect(entry.pos).toBe('verb');
+    expect(entry.aspect).toBe('perfective');
+  });
+
+  it('finds adjective via comma-separated alternate form "красивого"', () => {
+    // "красивого" appears in decl_m_gen and also as alternate in decl_m_acc
+    const entry = lookupWord('красивого');
+    expect(entry).not.toBeNull();
+    expect(entry.pos).toBe('adjective');
+  });
+
+  it('still returns null for truly unknown words', () => {
+    expect(lookupWord('абракадабра')).toBeNull();
+  });
+});
+
 // ── lookupWord — lemma fallback ───────────────────────────────────────
 
 describe('lookupWord — lemma fallback', () => {

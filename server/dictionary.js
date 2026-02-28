@@ -8,7 +8,8 @@
  *
  * Lookup is by bare form. When the frontend sends a lemma (from GPT-4o
  * lemmatization), we try the lemma first, then fall back to the raw word.
- * No reverse inflected-form index is built (would cost ~100MB RAM).
+ * A reverse inflection index maps every inflected form back to its bare
+ * form, enabling lookup of e.g. "книгу" → "книга" without GPT calls.
  */
 
 import fs from 'fs';
@@ -20,6 +21,9 @@ const DEFAULT_DATA_DIR = path.join(__dirname, 'data', 'openrussian');
 
 /** @type {Map<string, object>} bare → DictionaryEntry */
 let index = new Map();
+
+/** @type {Map<string, string>} normalized inflected form → normalized bare form */
+let inflectionIndex = new Map();
 
 /**
  * Convert OpenRussian apostrophe-style stress marks to Unicode combining accent.
@@ -66,6 +70,54 @@ function parseTranslations(raw) {
  */
 function normalizeForLookup(word) {
   return word.toLowerCase().replace(/ё/g, 'е');
+}
+
+/** Columns containing inflected forms, by POS. */
+const NOUN_INFLECTION_COLS = [
+  'sg_nom', 'sg_gen', 'sg_dat', 'sg_acc', 'sg_inst', 'sg_prep',
+  'pl_nom', 'pl_gen', 'pl_dat', 'pl_acc', 'pl_inst', 'pl_prep',
+];
+const VERB_INFLECTION_COLS = [
+  'presfut_sg1', 'presfut_sg2', 'presfut_sg3',
+  'presfut_pl1', 'presfut_pl2', 'presfut_pl3',
+  'past_m', 'past_f', 'past_n', 'past_pl',
+  'imperative_sg', 'imperative_pl',
+];
+const ADJ_INFLECTION_COLS = [
+  'decl_m_nom', 'decl_m_gen', 'decl_m_dat', 'decl_m_acc', 'decl_m_inst', 'decl_m_prep',
+  'decl_f_nom', 'decl_f_gen', 'decl_f_dat', 'decl_f_acc', 'decl_f_inst', 'decl_f_prep',
+  'decl_n_nom', 'decl_n_gen', 'decl_n_dat', 'decl_n_acc', 'decl_n_inst', 'decl_n_prep',
+  'decl_pl_nom', 'decl_pl_gen', 'decl_pl_dat', 'decl_pl_acc', 'decl_pl_inst', 'decl_pl_prep',
+  'short_m', 'short_f', 'short_n', 'short_pl',
+  'comparative', 'superlative',
+];
+
+/**
+ * Extract inflected forms from a TSV row and add them to the reverse index.
+ * Handles comma-separated alternate forms (e.g. adjective accusative: "красивый, красивого").
+ * Strips apostrophe stress marks before normalizing.
+ *
+ * @param {Map<string,string>} reverseMap — inflected → bare (normalized)
+ * @param {string} normalizedBare — the normalized bare form
+ * @param {object} row — parsed TSV row
+ * @param {string[]} columns — column names to extract
+ */
+function addInflections(reverseMap, normalizedBare, row, columns) {
+  for (const col of columns) {
+    const raw = row[col];
+    if (!raw) continue;
+    // Some cells contain comma-separated alternates (e.g. "краси'вый, краси'вого")
+    const forms = raw.split(',');
+    for (const form of forms) {
+      const stripped = form.trim().replace(/'/g, '');
+      if (!stripped) continue;
+      const normalized = normalizeForLookup(stripped);
+      // Don't overwrite: first entry wins (bare form itself is already in main index)
+      if (normalized !== normalizedBare && !reverseMap.has(normalized)) {
+        reverseMap.set(normalized, normalizedBare);
+      }
+    }
+  }
 }
 
 /**
@@ -195,26 +247,33 @@ export async function initDictionary(dataDir = DEFAULT_DATA_DIR) {
   }
 
   const newIndex = new Map();
+  const newInflectionIndex = new Map();
   let count = 0;
 
   // Nouns
   for (const row of loadTsv(path.join(dataDir, 'nouns.csv'))) {
     if (!row.bare) continue;
-    newIndex.set(normalizeForLookup(row.bare), buildNounEntry(row));
+    const normalizedBare = normalizeForLookup(row.bare);
+    newIndex.set(normalizedBare, buildNounEntry(row));
+    addInflections(newInflectionIndex, normalizedBare, row, NOUN_INFLECTION_COLS);
     count++;
   }
 
   // Verbs
   for (const row of loadTsv(path.join(dataDir, 'verbs.csv'))) {
     if (!row.bare) continue;
-    newIndex.set(normalizeForLookup(row.bare), buildVerbEntry(row));
+    const normalizedBare = normalizeForLookup(row.bare);
+    newIndex.set(normalizedBare, buildVerbEntry(row));
+    addInflections(newInflectionIndex, normalizedBare, row, VERB_INFLECTION_COLS);
     count++;
   }
 
   // Adjectives
   for (const row of loadTsv(path.join(dataDir, 'adjectives.csv'))) {
     if (!row.bare) continue;
-    newIndex.set(normalizeForLookup(row.bare), buildAdjectiveEntry(row));
+    const normalizedBare = normalizeForLookup(row.bare);
+    newIndex.set(normalizedBare, buildAdjectiveEntry(row));
+    addInflections(newInflectionIndex, normalizedBare, row, ADJ_INFLECTION_COLS);
     count++;
   }
 
@@ -226,7 +285,8 @@ export async function initDictionary(dataDir = DEFAULT_DATA_DIR) {
   }
 
   index = newIndex;
-  console.log(`[Dictionary] Loaded ${count} entries`);
+  inflectionIndex = newInflectionIndex;
+  console.log(`[Dictionary] Loaded ${count} entries, ${newInflectionIndex.size} inflection forms`);
 }
 
 /**
@@ -242,8 +302,14 @@ export function lookupWord(word, lemma) {
     const entry = index.get(normalizeForLookup(lemma));
     if (entry) return entry;
   }
-  // Fall back to the raw word as bare form
-  return index.get(normalizeForLookup(word)) || null;
+  // Try the raw word as a bare form
+  const normalized = normalizeForLookup(word);
+  const direct = index.get(normalized);
+  if (direct) return direct;
+  // Fall back to reverse inflection index: inflected form → bare form → entry
+  const bare = inflectionIndex.get(normalized);
+  if (bare) return index.get(bare) || null;
+  return null;
 }
 
 /**
@@ -251,4 +317,5 @@ export function lookupWord(word, lemma) {
  */
 export function _resetForTesting() {
   index = new Map();
+  inflectionIndex = new Map();
 }

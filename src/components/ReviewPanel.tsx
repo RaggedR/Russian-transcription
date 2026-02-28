@@ -262,16 +262,70 @@ export function ReviewPanel({ isOpen, onClose, dueCards, onReview, onRemove }: R
     // Compute the updated card to check if it stays in learning
     const updated = sm2(card, rating);
 
-    if (updated.repetition === 0) {
-      // Still in learning — re-queue with a delay
-      const delayMs = rating === 0 ? 60 * 1000 : 5 * 60 * 1000;
-      setQueue(prev => [...prev, { card: updated, dueAt: Date.now() + delayMs }]);
-      popNext();
-    } else {
-      // Graduated or successful review — remove from this session's queue
-      popNext();
-    }
-  }, [currentItem, onReview, popNext]);
+    // Combine re-queue + pop-next into a single setQueue call to avoid
+    // React batching race where popNext reads stale state.
+    setQueue(prev => {
+      let next = prev;
+
+      // If still in learning, re-queue with a delay
+      if (updated.repetition === 0) {
+        const delayMs = rating === 0 ? 60 * 1000 : 5 * 60 * 1000;
+        next = [...prev, { card: updated, dueAt: Date.now() + delayMs }];
+      }
+
+      // Pop the next ready card from the (possibly updated) queue
+      const now = Date.now();
+      const readyIdx = next.findIndex(item => item.dueAt <= now);
+      if (readyIdx !== -1) {
+        const popped = [...next];
+        const [item] = popped.splice(readyIdx, 1);
+        setCurrentItem(item);
+        setShowAnswer(false);
+        setWaitingSeconds(null);
+        return popped;
+      }
+
+      // Nothing ready — check if there are waiting items
+      if (next.length > 0) {
+        const nearest = Math.min(...next.map(i => i.dueAt));
+        const secsLeft = Math.max(1, Math.ceil((nearest - now) / 1000));
+        setWaitingSeconds(secsLeft);
+        setCurrentItem(null);
+
+        if (timerRef.current) clearInterval(timerRef.current);
+        timerRef.current = setInterval(() => {
+          const nowInner = Date.now();
+          setQueue(q => {
+            const readyItem = q.find(i => i.dueAt <= nowInner);
+            if (readyItem) {
+              if (timerRef.current) clearInterval(timerRef.current);
+              timerRef.current = null;
+              const idx = q.findIndex(i => i.card.id === readyItem.card.id);
+              if (idx !== -1) {
+                const remaining = [...q];
+                const [item] = remaining.splice(idx, 1);
+                setCurrentItem(item);
+                setShowAnswer(false);
+                setWaitingSeconds(null);
+                return remaining;
+              }
+            } else {
+              const nearestNow = Math.min(...q.map(i => i.dueAt));
+              setWaitingSeconds(Math.max(1, Math.ceil((nearestNow - nowInner) / 1000)));
+            }
+            return q;
+          });
+        }, 1000);
+
+        return next;
+      }
+
+      // Queue empty — done
+      setCurrentItem(null);
+      setWaitingSeconds(null);
+      return next;
+    });
+  }, [currentItem, onReview]);
 
   const handleRemove = useCallback(() => {
     if (!currentItem) return;
