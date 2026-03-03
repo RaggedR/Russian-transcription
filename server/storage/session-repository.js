@@ -6,6 +6,8 @@ import fs from 'fs';
 import { LRUCache } from 'lru-cache';
 import { isLocal, getBucket, deleteGcsFile } from './gcs.js';
 import { cacheSessionUrl } from './url-cache.js';
+import { addToLibrary, removeFromLibrary } from './library-index.js';
+import { getSignedMediaUrl } from './gcs.js';
 
 // In-memory session storage for local development
 export const localSessions = new Map();
@@ -66,8 +68,9 @@ export async function deleteSessionAndVideos(sessionId) {
     await deleteGcsFile(`sessions/${sessionId}.json`);
   }
 
-  // Clean up memory cache
+  // Clean up memory cache + library index
   analysisSessions.delete(sessionId);
+  removeFromLibrary(sessionId);
 
   if (isLocal()) {
     // Clean up local files
@@ -122,6 +125,9 @@ export async function getAnalysisSession(sessionId) {
 export async function setAnalysisSession(sessionId, session) {
   // Save to memory
   analysisSessions.set(sessionId, session);
+
+  // Update library index
+  addToLibrary(sessionId, session, new Date());
 
   // Save to GCS (serialize Map to array for JSON)
   const sessionToSave = {
@@ -200,11 +206,14 @@ export async function rebuildUrlCache() {
       try {
         const [contents] = await file.download();
         const session = JSON.parse(contents.toString());
+        const sessionId = file.name.replace('sessions/', '').replace('.json', '');
         if (session.status === 'ready' && session.url && session.uid) {
-          const sessionId = file.name.replace('sessions/', '').replace('.json', '');
           cacheSessionUrl(session.url, sessionId, session.uid);
           cached++;
         }
+        // Populate library index (all ready sessions, regardless of uid)
+        const [metadata] = await file.getMetadata();
+        addToLibrary(sessionId, session, metadata.timeCreated);
       } catch {
         // Skip unreadable sessions
       }
@@ -214,4 +223,46 @@ export async function rebuildUrlCache() {
   } catch (err) {
     console.error('[Startup] Failed to rebuild URL cache:', err.message);
   }
+}
+
+/**
+ * Clone a session for a new user (used by library open).
+ * Re-signs GCS media URLs pointing to the source session's files.
+ * Does NOT copy GCS media — signed URLs are bucket-scoped, not user-scoped.
+ */
+export async function cloneSession(source, sourceSessionId, newUid) {
+  const cloned = {
+    ...source,
+    uid: newUid,
+    chunkTranscripts: source.chunkTranscripts instanceof Map
+      ? new Map(source.chunkTranscripts)
+      : new Map(source.chunkTranscripts || []),
+    chunkTexts: source.chunkTexts instanceof Map
+      ? new Map(source.chunkTexts)
+      : source.chunkTexts ? new Map(source.chunkTexts) : undefined,
+    chunks: source.chunks.map(c => ({ ...c })),
+  };
+
+  // Re-sign GCS URLs for ready chunks (pointing to source session's media files)
+  if (!isLocal()) {
+    for (const chunk of cloned.chunks) {
+      if (chunk.status === 'ready') {
+        const isDemo = source.isDemo;
+        if (chunk.videoUrl) {
+          const gcsKey = isDemo
+            ? `demo/demo-video-${chunk.id}.mp4`
+            : `videos/${sourceSessionId}_${chunk.id}.mp4`;
+          chunk.videoUrl = await getSignedMediaUrl(gcsKey);
+        }
+        if (chunk.audioUrl) {
+          const gcsKey = isDemo
+            ? `demo/demo-text-${chunk.id}.mp3`
+            : `videos/${sourceSessionId}_${chunk.id}.mp3`;
+          chunk.audioUrl = await getSignedMediaUrl(gcsKey);
+        }
+      }
+    }
+  }
+
+  return cloned;
 }

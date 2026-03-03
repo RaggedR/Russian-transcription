@@ -382,3 +382,35 @@ export async function createPortalSession(): Promise<{ url: string }> {
     method: 'POST',
   });
 }
+
+// ── Library ───────────────────────────────────────────────────────────
+
+export interface LibraryItem {
+  sessionId: string;
+  title: string;
+  contentType: 'video' | 'text';
+  url: string;
+  chunkCount: number;
+  totalDuration: number;
+  hasMoreChunks: boolean;
+  createdAt: string;
+}
+
+/**
+ * Fetch the content library (all cached sessions across all users).
+ */
+export async function fetchLibrary(): Promise<LibraryItem[]> {
+  const data = await apiRequest<{ items: LibraryItem[] }>('/api/library');
+  return data.items;
+}
+
+/**
+ * Open a library item by cloning the source session for the current user.
+ * Returns the same shape as a demo/cached response.
+ */
+export async function openLibraryItem(sourceSessionId: string): Promise<DemoResponse> {
+  return apiRequest<DemoResponse>('/api/library/open', {
+    method: 'POST',
+    body: JSON.stringify({ sourceSessionId }),
+  });
+}

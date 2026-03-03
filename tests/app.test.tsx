@@ -108,6 +108,10 @@ vi.mock('../src/services/api', () => ({
   getChunk: vi.fn(),
   downloadChunk: vi.fn(),
   loadMoreChunks: vi.fn(),
+  deleteAccount: vi.fn().mockResolvedValue({ success: true }),
+  loadDemo: vi.fn(),
+  fetchLibrary: vi.fn().mockResolvedValue([]),
+  openLibraryItem: vi.fn(),
   getSubscription: vi.fn().mockResolvedValue({
     status: 'trialing',
     trialEnd: new Date(Date.now() + 25 * 24 * 60 * 60 * 1000).toISOString(),

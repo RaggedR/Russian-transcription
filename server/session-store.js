@@ -26,7 +26,11 @@ export {
   setAnalysisSession,
   cleanupOldSessions,
   rebuildUrlCache,
+  cloneSession,
 } from './storage/session-repository.js';
+
+// Library index
+export { addToLibrary, removeFromLibrary, getLibraryEntries } from './storage/library-index.js';
 
 // Wrap getCachedSession to inject getAnalysisSession (breaks circular dependency
 // between url-cache.js and session-repository.js)

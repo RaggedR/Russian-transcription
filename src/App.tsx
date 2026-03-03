@@ -7,6 +7,7 @@ import { ProgressBar } from './components/ProgressBar';
 import { DeckBadge } from './components/DeckBadge';
 import { LandingPage } from './components/LandingPage';
 import { PaywallScreen } from './components/PaywallScreen';
+import { Library } from './components/Library';
 import { useDeck } from './hooks/useDeck';
 
 // Lazy-loaded components — only for views the user navigates to AFTER initial render
@@ -17,7 +18,8 @@ const AudioPlayer = lazy(() => import('./components/AudioPlayer').then(m => ({ d
 const TranscriptPanel = lazy(() => import('./components/TranscriptPanel').then(m => ({ default: m.TranscriptPanel })));
 import { useAuth } from './hooks/useAuth';
 import { useSubscription } from './hooks/useSubscription';
-import { apiRequest, subscribeToProgress, getSession, getChunk, downloadChunk, loadMoreChunks, deleteAccount, loadDemo } from './services/api';
+import { apiRequest, subscribeToProgress, getSession, getChunk, downloadChunk, loadMoreChunks, deleteAccount, loadDemo, fetchLibrary, openLibraryItem } from './services/api';
+import type { LibraryItem } from './services/api';
 import type {
   TranslatorConfig,
   AppView,
@@ -233,6 +235,16 @@ function App() {
         // Non-critical feature, silently ignore
       });
   }, []);
+
+  // Fetch content library when authenticated
+  useEffect(() => {
+    if (!userId) return;
+    setIsLoadingLibrary(true);
+    fetchLibrary()
+      .then(setLibraryItems)
+      .catch(() => { /* Non-critical, silently ignore */ })
+      .finally(() => setIsLoadingLibrary(false));
+  }, [userId]);
 
   // Clear transient overlays when URL changes (e.g., browser back/forward)
   useEffect(() => {
@@ -684,6 +696,10 @@ function App() {
 
   const [isDemoLoading, setIsDemoLoading] = useState(false);
 
+  // Library state
+  const [libraryItems, setLibraryItems] = useState<LibraryItem[]>([]);
+  const [isLoadingLibrary, setIsLoadingLibrary] = useState(false);
+
   const handleLoadDemo = useCallback(async (type: 'video' | 'text') => {
     setContentType(type);
     contentTypeRef.current = type;
@@ -714,6 +730,42 @@ function App() {
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load demo');
+      navigate('/', { replace: true });
+    } finally {
+      setIsDemoLoading(false);
+    }
+  }, [handleSelectVideoChunk, handleSelectTextChunk, navigate]);
+
+  const handleOpenLibraryItem = useCallback(async (item: LibraryItem) => {
+    setContentType(item.contentType);
+    contentTypeRef.current = item.contentType;
+    setError(null);
+    setIsDemoLoading(true);
+
+    try {
+      const response = await openLibraryItem(item.sessionId);
+      const newSessionId = response.sessionId;
+      setSessionId(newSessionId);
+      setSessionTitle(response.title);
+      setSessionTotalDuration(response.totalDuration);
+      setHasMoreChunks(response.hasMoreChunks);
+      setOriginalUrl('');
+
+      const chunksWithStatus = response.chunks.map(c => ({
+        ...c,
+        status: c.status || 'pending' as const,
+        videoUrl: c.videoUrl || null,
+      }));
+      setSessionChunks(chunksWithStatus);
+
+      if (chunksWithStatus.length === 1 && !response.hasMoreChunks) {
+        const handler = item.contentType === 'text' ? handleSelectTextChunk : handleSelectVideoChunk;
+        setTimeout(() => handler(chunksWithStatus[0], newSessionId), 0);
+      } else {
+        navigate('/chunks');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to open library item');
       navigate('/', { replace: true });
     } finally {
       setIsDemoLoading(false);
@@ -920,6 +972,13 @@ function App() {
                 </button>
               </div>
             </div>
+
+            {/* Content Library */}
+            <Library
+              items={libraryItems}
+              isLoading={isLoadingLibrary}
+              onOpenItem={handleOpenLibraryItem}
+            />
           </div>
         )}
 
