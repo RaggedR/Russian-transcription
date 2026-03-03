@@ -20,6 +20,7 @@ import {
   getAnalysisSession, setAnalysisSession,
   deleteSessionAndVideos,
   cleanupOldSessions, rebuildUrlCache,
+  cloneSession, getLibraryEntries,
   init as initSessionStore,
 } from './session-store.js';
 import { progressClients, sendProgress, createProgressCallback, friendlyErrorMessage } from './progress.js';
@@ -692,6 +693,42 @@ app.post('/api/demo', demoRateLimit, async (req, res) => {
     }
   }
 
+  // For text mode with rawText: create ALL text chunks, mark pre-baked ones as ready
+  let allChunks = chunks;
+  const chunkTranscriptsMap = new Map(demoData.chunkTranscripts);
+  let chunkTextsMap = demoData.chunkTexts ? new Map(demoData.chunkTexts) : undefined;
+
+  if (type === 'text' && demoData.rawText) {
+    const allTextChunks = createTextChunks(demoData.rawText);
+    const preBakedIds = new Set(chunks.map(c => c.id));
+
+    allChunks = allTextChunks.map((tc, i) => {
+      const preBaked = chunks.find(c => c.index === i);
+      if (preBaked && preBakedIds.has(preBaked.id)) {
+        return preBaked; // Already has status='ready' and audioUrl
+      }
+      return {
+        id: tc.id,
+        index: tc.index,
+        startTime: 0,
+        endTime: 0,
+        duration: 0,
+        previewText: tc.previewText,
+        wordCount: tc.wordCount,
+        status: 'pending',
+        audioUrl: null,
+      };
+    });
+
+    // Store all chunk texts for on-demand TTS generation
+    if (!chunkTextsMap) chunkTextsMap = new Map();
+    for (const tc of allTextChunks) {
+      if (!chunkTextsMap.has(tc.id)) {
+        chunkTextsMap.set(tc.id, tc.text);
+      }
+    }
+  }
+
   // Build session with real ownership
   const session = {
     status: 'ready',
@@ -699,22 +736,30 @@ app.post('/api/demo', demoRateLimit, async (req, res) => {
     uid: req.uid,
     title: demoData.title,
     contentType: demoData.contentType,
-    chunks,
+    chunks: allChunks,
     totalDuration: demoData.totalDuration,
     hasMoreChunks: demoData.hasMoreChunks || false,
-    chunkTranscripts: new Map(demoData.chunkTranscripts),
+    chunkTranscripts: chunkTranscriptsMap,
     isDemo: true,
   };
 
-  // For text mode, also restore chunkTexts if present
-  if (demoData.chunkTexts) {
-    session.chunkTexts = new Map(demoData.chunkTexts);
+  // For video: include transcript and nextBatchStartTime for load-more support
+  if (demoData.transcript) {
+    session.transcript = demoData.transcript;
+  }
+  if (demoData.nextBatchStartTime != null) {
+    session.nextBatchStartTime = demoData.nextBatchStartTime;
   }
 
-  // Demo sessions are in-memory only — no GCS write needed since data comes from pre-baked JSON
-  analysisSessions.set(sessionId, session);
+  // For text mode: store chunkTexts for on-demand TTS
+  if (chunkTextsMap) {
+    session.chunkTexts = chunkTextsMap;
+  }
 
-  console.log(`[Demo] Created ${type} session ${sessionId} for user ${req.uid}`);
+  // Persist to GCS so load-more and library endpoints can find the session
+  await setAnalysisSession(sessionId, session);
+
+  console.log(`[Demo] Created ${type} session ${sessionId} for user ${req.uid} (hasMore: ${session.hasMoreChunks})`);
 
   res.json({
     sessionId,
@@ -722,8 +767,55 @@ app.post('/api/demo', demoRateLimit, async (req, res) => {
     title: demoData.title,
     contentType: demoData.contentType,
     totalDuration: demoData.totalDuration,
-    chunks,
-    hasMoreChunks: demoData.hasMoreChunks || false,
+    chunks: allChunks,
+    hasMoreChunks: session.hasMoreChunks,
+  });
+});
+
+/**
+ * GET /api/library
+ * Browse all cached sessions across all users, ordered most recent first.
+ * No subscription required. Auth required (global middleware).
+ */
+app.get('/api/library', (req, res) => {
+  // Strip url from entries to avoid leaking other users' content choices
+  const entries = getLibraryEntries().map(({ url, ...rest }) => rest);
+  res.json({ items: entries });
+});
+
+/**
+ * POST /api/library/open
+ * Clone a library session for the current user, giving instant access
+ * to existing chunks without re-analyzing.
+ * Body: { sourceSessionId }
+ */
+app.post('/api/library/open', demoRateLimit, async (req, res) => {
+  const { sourceSessionId } = req.body;
+  if (!sourceSessionId) {
+    return res.status(400).json({ error: 'sourceSessionId is required' });
+  }
+
+  const source = await getAnalysisSession(sourceSessionId);
+  if (!source) {
+    return res.status(404).json({ error: 'Session not found' });
+  }
+
+  const newSessionId = crypto.randomUUID();
+  const cloned = await cloneSession(source, sourceSessionId, req.uid);
+
+  await setAnalysisSession(newSessionId, cloned);
+  cacheSessionUrl(cloned.url, newSessionId, req.uid);
+
+  console.log(`[Library] Cloned session ${sourceSessionId} → ${newSessionId} for user ${req.uid}`);
+
+  res.json({
+    sessionId: newSessionId,
+    status: 'cached',
+    title: cloned.title,
+    contentType: cloned.contentType,
+    totalDuration: cloned.totalDuration,
+    chunks: cloned.chunks,
+    hasMoreChunks: cloned.hasMoreChunks,
   });
 });
 
