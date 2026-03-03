@@ -7,22 +7,6 @@ interface LibraryProps {
   onOpenItem: (item: LibraryItem) => void;
 }
 
-function formatRelativeDate(dateStr: string): string {
-  const date = new Date(dateStr);
-  const now = Date.now();
-  const diffMs = now - date.getTime();
-  const diffMin = Math.floor(diffMs / 60_000);
-  const diffHr = Math.floor(diffMs / 3_600_000);
-  const diffDay = Math.floor(diffMs / 86_400_000);
-
-  if (diffMin < 1) return 'Just now';
-  if (diffMin < 60) return `${diffMin}m ago`;
-  if (diffHr < 24) return `${diffHr}h ago`;
-  if (diffDay === 1) return 'Yesterday';
-  if (diffDay < 7) return `${diffDay}d ago`;
-  return date.toLocaleDateString();
-}
-
 function formatDuration(seconds: number): string {
   if (!seconds) return '';
   const mins = Math.floor(seconds / 60);
@@ -32,66 +16,82 @@ function formatDuration(seconds: number): string {
   return remMins > 0 ? `${hrs}h ${remMins}m` : `${hrs}h`;
 }
 
+/** Truncate title to fit in a button, preserving whole words. */
+function truncateTitle(title: string, maxLen = 40): string {
+  if (title.length <= maxLen) return title;
+  const truncated = title.slice(0, maxLen).replace(/\s+\S*$/, '');
+  return truncated + '...';
+}
+
 export function Library({ items, isLoading, isItemLoading, onOpenItem }: LibraryProps) {
+  // Find most recent video and most recent text (items are sorted by createdAt desc)
+  const latestVideo = items.find(i => i.contentType === 'video') ?? null;
+  const latestText = items.find(i => i.contentType === 'text') ?? null;
+
   if (isLoading) {
-    return (
-      <div className="max-w-2xl mx-auto mt-8">
-        <h3 className="text-sm font-medium text-gray-500 uppercase tracking-wide mb-4">Content Library</h3>
-        <div className="flex justify-center py-6">
-          <div className="inline-block animate-spin rounded-full h-6 w-6 border-2 border-blue-500 border-t-transparent"></div>
-        </div>
-      </div>
-    );
+    return null; // Don't show anything while loading — avoids layout shift
   }
 
-  if (items.length === 0) {
-    return (
-      <div className="max-w-2xl mx-auto mt-8">
-        <h3 className="text-sm font-medium text-gray-500 uppercase tracking-wide mb-4">Content Library</h3>
-        <p className="text-center text-sm text-gray-400 py-6">No content yet. Analyze a video or text to build the library.</p>
-      </div>
-    );
+  if (!latestVideo && !latestText) {
+    return null; // Nothing to show
   }
 
   return (
-    <div className="max-w-2xl mx-auto mt-8">
-      <h3 className="text-sm font-medium text-gray-500 uppercase tracking-wide mb-4">Content Library</h3>
-      <div className="grid gap-3 sm:grid-cols-2">
-        {items.map((item) => (
+    <div className="max-w-2xl mx-auto">
+      <div className="flex items-center gap-4 my-6">
+        <div className="flex-1 border-t border-gray-300"></div>
+        <span className="text-sm text-gray-500">or continue where you left off</span>
+        <div className="flex-1 border-t border-gray-300"></div>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {latestVideo && (
           <button
-            key={item.sessionId}
-            onClick={() => onOpenItem(item)}
+            data-testid="cached-video-btn"
+            onClick={() => onOpenItem(latestVideo)}
             disabled={isItemLoading}
-            className="text-left p-4 rounded-lg border border-gray-200 bg-white hover:border-blue-300 hover:shadow-md transition-all disabled:opacity-50 disabled:cursor-wait"
+            className="px-4 py-3 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 hover:border-purple-400 transition-colors text-sm text-gray-700 disabled:opacity-50 disabled:cursor-wait text-left"
           >
-            <div className="flex items-start justify-between gap-2 mb-1">
-              <span className="text-sm font-medium text-gray-900 line-clamp-1">{item.title}</span>
-              <span className={`shrink-0 text-xs px-1.5 py-0.5 rounded-full font-medium ${
-                item.contentType === 'video'
-                  ? 'bg-purple-100 text-purple-700'
-                  : 'bg-emerald-100 text-emerald-700'
-              }`}>
-                {item.contentType === 'video' ? 'Video' : 'Text'}
+            {isItemLoading ? (
+              <span className="flex items-center justify-center gap-2">
+                <span className="inline-block animate-spin rounded-full h-4 w-4 border-2 border-purple-500 border-t-transparent"></span>
+                Loading...
               </span>
-            </div>
-            <div className="flex items-center gap-2 text-xs text-gray-500">
-              <span>{item.chunkCount} {item.contentType === 'text' ? 'sections' : 'parts'}</span>
-              {item.contentType === 'video' && item.totalDuration > 0 && (
-                <>
-                  <span className="text-gray-300">&middot;</span>
-                  <span>{formatDuration(item.totalDuration)}</span>
-                </>
-              )}
-              {item.hasMoreChunks && (
-                <>
-                  <span className="text-gray-300">&middot;</span>
-                  <span className="text-blue-600">More available</span>
-                </>
-              )}
-              <span className="ml-auto">{formatRelativeDate(item.createdAt)}</span>
-            </div>
+            ) : (
+              <div>
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="text-xs px-1.5 py-0.5 rounded-full font-medium bg-purple-100 text-purple-700">Video</span>
+                  {latestVideo.totalDuration > 0 && (
+                    <span className="text-xs text-gray-400">{formatDuration(latestVideo.totalDuration)}</span>
+                  )}
+                </div>
+                <span className="font-medium text-gray-900 line-clamp-1">{truncateTitle(latestVideo.title)}</span>
+              </div>
+            )}
           </button>
-        ))}
+        )}
+        {latestText && (
+          <button
+            data-testid="cached-text-btn"
+            onClick={() => onOpenItem(latestText)}
+            disabled={isItemLoading}
+            className="px-4 py-3 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 hover:border-emerald-400 transition-colors text-sm text-gray-700 disabled:opacity-50 disabled:cursor-wait text-left"
+          >
+            {isItemLoading ? (
+              <span className="flex items-center justify-center gap-2">
+                <span className="inline-block animate-spin rounded-full h-4 w-4 border-2 border-emerald-500 border-t-transparent"></span>
+                Loading...
+              </span>
+            ) : (
+              <div>
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="text-xs px-1.5 py-0.5 rounded-full font-medium bg-emerald-100 text-emerald-700">Text</span>
+                  <span className="text-xs text-gray-400">{latestText.chunkCount} sections</span>
+                </div>
+                <span className="font-medium text-gray-900 line-clamp-1">{truncateTitle(latestText.title)}</span>
+              </div>
+            )}
+          </button>
+        )}
       </div>
     </div>
   );
