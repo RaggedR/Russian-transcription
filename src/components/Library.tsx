@@ -3,6 +3,7 @@ import type { LibraryItem } from '../services/api';
 interface LibraryProps {
   items: LibraryItem[];
   isLoading: boolean;
+  isItemLoading: boolean;
   onOpenItem: (item: LibraryItem) => void;
 }
 
@@ -31,7 +32,7 @@ function formatDuration(seconds: number): string {
   return remMins > 0 ? `${hrs}h ${remMins}m` : `${hrs}h`;
 }
 
-export function Library({ items, isLoading, onOpenItem }: LibraryProps) {
+export function Library({ items, isLoading, isItemLoading, onOpenItem }: LibraryProps) {
   if (isLoading) {
     return (
       <div className="max-w-2xl mx-auto mt-8">
@@ -43,7 +44,14 @@ export function Library({ items, isLoading, onOpenItem }: LibraryProps) {
     );
   }
 
-  if (items.length === 0) return null;
+  if (items.length === 0) {
+    return (
+      <div className="max-w-2xl mx-auto mt-8">
+        <h3 className="text-sm font-medium text-gray-500 uppercase tracking-wide mb-4">Content Library</h3>
+        <p className="text-center text-sm text-gray-400 py-6">No content yet. Analyze a video or text to build the library.</p>
+      </div>
+    );
+  }
 
   return (
     <div className="max-w-2xl mx-auto mt-8">
@@ -53,7 +61,8 @@ export function Library({ items, isLoading, onOpenItem }: LibraryProps) {
           <button
             key={item.sessionId}
             onClick={() => onOpenItem(item)}
-            className="text-left p-4 rounded-lg border border-gray-200 bg-white hover:border-blue-300 hover:shadow-md transition-all"
+            disabled={isItemLoading}
+            className="text-left p-4 rounded-lg border border-gray-200 bg-white hover:border-blue-300 hover:shadow-md transition-all disabled:opacity-50 disabled:cursor-wait"
           >
             <div className="flex items-start justify-between gap-2 mb-1">
               <span className="text-sm font-medium text-gray-900 line-clamp-1">{item.title}</span>

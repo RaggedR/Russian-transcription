@@ -11,6 +11,9 @@ const libraryByUrl = new Map();
 // Reverse lookup: sessionId → normalizedUrl (for efficient removal)
 const sessionToUrl = new Map();
 
+// Cached sorted array — invalidated on add/remove
+let sortedCache = null;
+
 /**
  * Add or update a library entry for a session.
  * Only keeps the most recent session per URL.
@@ -44,6 +47,7 @@ export function addToLibrary(sessionId, session, createdAt) {
 
   libraryByUrl.set(normalized, entry);
   sessionToUrl.set(sessionId, normalized);
+  sortedCache = null; // Invalidate
 }
 
 /**
@@ -59,13 +63,18 @@ export function removeFromLibrary(sessionId) {
   const entry = libraryByUrl.get(normalized);
   if (entry && entry.sessionId === sessionId) {
     libraryByUrl.delete(normalized);
+    sortedCache = null; // Invalidate
   }
 }
 
 /**
  * Get all library entries, sorted by createdAt descending (most recent first).
+ * Caches the sorted result until the next add/remove.
  */
 export function getLibraryEntries() {
-  return Array.from(libraryByUrl.values())
-    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  if (!sortedCache) {
+    sortedCache = Array.from(libraryByUrl.values())
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  }
+  return sortedCache;
 }

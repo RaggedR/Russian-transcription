@@ -778,7 +778,8 @@ app.post('/api/demo', demoRateLimit, async (req, res) => {
  * No subscription required. Auth required (global middleware).
  */
 app.get('/api/library', (req, res) => {
-  const entries = getLibraryEntries();
+  // Strip url from entries to avoid leaking other users' content choices
+  const entries = getLibraryEntries().map(({ url, ...rest }) => rest);
   res.json({ items: entries });
 });
 
@@ -788,7 +789,7 @@ app.get('/api/library', (req, res) => {
  * to existing chunks without re-analyzing.
  * Body: { sourceSessionId }
  */
-app.post('/api/library/open', async (req, res) => {
+app.post('/api/library/open', demoRateLimit, async (req, res) => {
   const { sourceSessionId } = req.body;
   if (!sourceSessionId) {
     return res.status(400).json({ error: 'sourceSessionId is required' });

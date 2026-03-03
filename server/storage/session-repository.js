@@ -4,10 +4,9 @@
  */
 import fs from 'fs';
 import { LRUCache } from 'lru-cache';
-import { isLocal, getBucket, deleteGcsFile } from './gcs.js';
+import { isLocal, getBucket, deleteGcsFile, getSignedMediaUrl } from './gcs.js';
 import { cacheSessionUrl } from './url-cache.js';
 import { addToLibrary, removeFromLibrary } from './library-index.js';
-import { getSignedMediaUrl } from './gcs.js';
 
 // In-memory session storage for local development
 export const localSessions = new Map();
@@ -210,10 +209,10 @@ export async function rebuildUrlCache() {
         if (session.status === 'ready' && session.url && session.uid) {
           cacheSessionUrl(session.url, sessionId, session.uid);
           cached++;
+          // Populate library index (only ready sessions)
+          const [metadata] = await file.getMetadata();
+          addToLibrary(sessionId, session, metadata.timeCreated);
         }
-        // Populate library index (all ready sessions, regardless of uid)
-        const [metadata] = await file.getMetadata();
-        addToLibrary(sessionId, session, metadata.timeCreated);
       } catch {
         // Skip unreadable sessions
       }
@@ -234,6 +233,12 @@ export async function cloneSession(source, sourceSessionId, newUid) {
   const cloned = {
     ...source,
     uid: newUid,
+    // Deep-clone transcript to avoid mutation via load-more's .push()
+    transcript: source.transcript ? {
+      ...source.transcript,
+      words: [...source.transcript.words],
+      segments: [...source.transcript.segments],
+    } : undefined,
     chunkTranscripts: source.chunkTranscripts instanceof Map
       ? new Map(source.chunkTranscripts)
       : new Map(source.chunkTranscripts || []),

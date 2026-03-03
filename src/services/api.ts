@@ -389,7 +389,6 @@ export interface LibraryItem {
   sessionId: string;
   title: string;
   contentType: 'video' | 'text';
-  url: string;
   chunkCount: number;
   totalDuration: number;
   hasMoreChunks: boolean;
