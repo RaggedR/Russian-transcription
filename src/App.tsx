@@ -5,10 +5,13 @@ import { TextInput } from './components/TextInput';
 import { ChunkMenu } from './components/ChunkMenu';
 import { ProgressBar } from './components/ProgressBar';
 import { DeckBadge } from './components/DeckBadge';
+import { StreakBadge } from './components/StreakBadge';
 import { LandingPage } from './components/LandingPage';
 import { PaywallScreen } from './components/PaywallScreen';
 import { Library } from './components/Library';
 import { useDeck } from './hooks/useDeck';
+import { useStreak } from './hooks/useStreak';
+import { useCompletionDetector } from './hooks/useCompletionDetector';
 
 // Lazy-loaded components — only for views the user navigates to AFTER initial render
 const SettingsPanel = lazy(() => import('./components/SettingsPanel').then(m => ({ default: m.SettingsPanel })));
@@ -187,7 +190,15 @@ function App() {
   const { userId, user, isLoading: authLoading, authError, signInWithGoogle, signOut } = useAuth();
   const { subscription, isLoading: subLoading, needsPayment, handleSubscribe, handleManageSubscription, refetch: refetchSubscription } = useSubscription(userId);
   const { cards, dueCards, dueCount, addCard, removeCard, reviewCard, isWordInDeck, saveError, clearSaveError } = useDeck(userId);
+  const { currentStreak, completedToday, freezesRemaining, recordCompletion } = useStreak(userId);
+  const { handleTimeUpdate: handlePlaybackTime, reset: resetCompletion } = useCompletionDetector(transcript, recordCompletion);
   const [isReviewOpen, setIsReviewOpen] = useState(false);
+
+  // Wrapped time update: feeds both currentTime state and completion detector
+  const handleTimeUpdate = useCallback((time: number) => {
+    setCurrentTime(time);
+    handlePlaybackTime(time);
+  }, [handlePlaybackTime]);
 
   // Word frequency data
   const [wordFrequencies, setWordFrequencies] = useState<Map<string, number>>(new Map());
@@ -236,8 +247,8 @@ function App() {
       });
   }, []);
 
-  // Fetch content library when authenticated
-  useEffect(() => {
+  // Refresh library (called on mount and after returning to input view)
+  const refreshLibrary = useCallback(() => {
     if (!userId) return;
     setIsLoadingLibrary(true);
     fetchLibrary()
@@ -245,6 +256,11 @@ function App() {
       .catch(() => { /* Non-critical, silently ignore */ })
       .finally(() => setIsLoadingLibrary(false));
   }, [userId]);
+
+  // Fetch content library when authenticated
+  useEffect(() => {
+    refreshLibrary();
+  }, [refreshLibrary]);
 
   // Clear transient overlays when URL changes (e.g., browser back/forward)
   useEffect(() => {
@@ -280,12 +296,13 @@ function App() {
       setVideoTitle(data.title);
       setCurrentTime(0);
       setCurrentChunkIndex(chunk.index);
+      resetCompletion();
       navigate('/player');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load chunk');
       navigate('/chunks', { replace: true });
     }
-  }, [navigate]);
+  }, [navigate, resetCompletion]);
 
   // Shared: after a chunk finishes downloading, update state and show player
   const finishChunkDownload = useCallback((chunk: VideoChunk, data: { videoUrl?: string; audioUrl?: string; transcript: any; title: string }) => {
@@ -302,10 +319,11 @@ function App() {
     setVideoTitle(data.title);
     setCurrentTime(0);
     setCurrentChunkIndex(chunk.index);
+    resetCompletion();
     navigate('/player');
     setTransientView(null);
     setProgress([]);
-  }, [navigate]);
+  }, [navigate, resetCompletion]);
 
   const handleSelectVideoChunk = useCallback(async (chunk: VideoChunk, sessionIdOverride?: string) => {
     const activeSessionId = sessionIdOverride || sessionId;
@@ -695,7 +713,7 @@ function App() {
   }, [signOut]);
 
   const [isDemoLoading, setIsDemoLoading] = useState(false);
-  const [isLibraryItemLoading, setIsLibraryItemLoading] = useState(false);
+  const [loadingLibraryItemId, setLoadingLibraryItemId] = useState<string | null>(null);
 
   // Library state
   const [libraryItems, setLibraryItems] = useState<LibraryItem[]>([]);
@@ -741,7 +759,7 @@ function App() {
     setContentType(item.contentType);
     contentTypeRef.current = item.contentType;
     setError(null);
-    setIsLibraryItemLoading(true);
+    setLoadingLibraryItemId(item.sessionId);
 
     try {
       const response = await openLibraryItem(item.sessionId);
@@ -769,7 +787,7 @@ function App() {
       setError(err instanceof Error ? err.message : 'Failed to open library item');
       navigate('/', { replace: true });
     } finally {
-      setIsLibraryItemLoading(false);
+      setLoadingLibraryItemId(null);
     }
   }, [handleSelectVideoChunk, handleSelectTextChunk, navigate]);
 
@@ -803,7 +821,10 @@ function App() {
     setLoadingChunkIndex(null);
     setError(null);
     setProgress([]);
-  }, [navigate]);
+
+    // Refresh library so newly analyzed content appears
+    refreshLibrary();
+  }, [navigate, refreshLibrary]);
 
   // Show LandingPage immediately during auth loading AND when not logged in.
   // No spinner — user sees real content instantly instead of waiting for
@@ -857,6 +878,11 @@ function App() {
             Russian Video & Text
           </h1>
           <div className="flex items-center gap-1">
+          <StreakBadge
+            currentStreak={currentStreak}
+            completedToday={completedToday}
+            freezesRemaining={freezesRemaining}
+          />
           <DeckBadge
             dueCount={dueCount}
             totalCount={cards.length}
@@ -978,7 +1004,7 @@ function App() {
             <Library
               items={libraryItems}
               isLoading={isLoadingLibrary}
-              isItemLoading={isLibraryItemLoading}
+              loadingItemId={loadingLibraryItemId}
               onOpenItem={handleOpenLibraryItem}
             />
           </div>
@@ -1139,7 +1165,7 @@ function App() {
             {contentType === 'text' && audioUrl && (
               <Suspense fallback={<div className="flex justify-center py-12"><div className="inline-block animate-spin rounded-full h-10 w-10 border-4 border-blue-500 border-t-transparent"></div></div>}>
               <div className="space-y-4">
-                <AudioPlayer url={audioUrl} onTimeUpdate={setCurrentTime} />
+                <AudioPlayer url={audioUrl} onTimeUpdate={handleTimeUpdate} />
                 <div className="bg-white rounded-lg shadow-sm">
                   <div className="p-3 border-b bg-gray-50 rounded-t-lg">
                     <h3 className="font-medium text-gray-700">Text</h3>
@@ -1168,7 +1194,7 @@ function App() {
                   <VideoPlayer
                     url={videoUrl}
                     originalUrl={originalUrl}
-                    onTimeUpdate={setCurrentTime}
+                    onTimeUpdate={handleTimeUpdate}
                   />
                 </div>
                 <div className="bg-white rounded-lg shadow-sm">

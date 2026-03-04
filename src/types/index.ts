@@ -141,3 +141,14 @@ export interface SRSCard {
 }
 
 export type SRSRating = 0 | 2 | 4 | 5; // Again=0, Hard=2, Good=4, Easy=5
+
+// ── Streak tracking ─────────────────────────────────────────────────
+
+export interface StreakData {
+  currentStreak: number;
+  longestStreak: number;
+  completionDates: string[];         // "YYYY-MM-DD" local time, last ~90 days
+  freezesUsedThisWeek: number;       // 0, 1, or 2
+  freezeWeekStart: string;           // "YYYY-MM-DD" Monday of current tracking week
+  lastCompletionDate: string | null;
+}
