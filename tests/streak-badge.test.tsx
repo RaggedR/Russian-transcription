@@ -62,4 +62,11 @@ describe('StreakBadge', () => {
     render(<StreakBadge currentStreak={0} completedToday={false} freezesRemaining={2} />);
     expect(screen.getByTestId('streak-count').textContent).toBe('0');
   });
+
+  it('shows "start a streak" tooltip when streak is zero', () => {
+    render(<StreakBadge currentStreak={0} completedToday={false} freezesRemaining={2} />);
+    const badge = screen.getByTestId('streak-badge');
+    expect(badge.title).toContain('Complete a chunk to start a streak!');
+    expect(badge.title).not.toContain('extend');
+  });
 });

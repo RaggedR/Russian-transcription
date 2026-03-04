@@ -15,6 +15,8 @@ export function useCompletionDetector(
   const lastTimeRef = useRef<number | null>(null);
   const playedTimeRef = useRef(0);
   const firedRef = useRef(false);
+  const onCompleteRef = useRef(onComplete);
+  onCompleteRef.current = onComplete;
 
   const handleTimeUpdate = useCallback((time: number) => {
     if (!transcript || firedRef.current) return;
@@ -34,10 +36,10 @@ export function useCompletionDetector(
 
       if (playedTimeRef.current >= transcript.duration * 0.5) {
         firedRef.current = true;
-        onComplete();
+        onCompleteRef.current();
       }
     }
-  }, [transcript, onComplete]);
+  }, [transcript]);
 
   const reset = useCallback(() => {
     lastTimeRef.current = null;

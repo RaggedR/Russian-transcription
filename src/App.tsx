@@ -713,7 +713,7 @@ function App() {
   }, [signOut]);
 
   const [isDemoLoading, setIsDemoLoading] = useState(false);
-  const [isLibraryItemLoading, setIsLibraryItemLoading] = useState(false);
+  const [loadingLibraryItemId, setLoadingLibraryItemId] = useState<string | null>(null);
 
   // Library state
   const [libraryItems, setLibraryItems] = useState<LibraryItem[]>([]);
@@ -759,7 +759,7 @@ function App() {
     setContentType(item.contentType);
     contentTypeRef.current = item.contentType;
     setError(null);
-    setIsLibraryItemLoading(true);
+    setLoadingLibraryItemId(item.sessionId);
 
     try {
       const response = await openLibraryItem(item.sessionId);
@@ -787,7 +787,7 @@ function App() {
       setError(err instanceof Error ? err.message : 'Failed to open library item');
       navigate('/', { replace: true });
     } finally {
-      setIsLibraryItemLoading(false);
+      setLoadingLibraryItemId(null);
     }
   }, [handleSelectVideoChunk, handleSelectTextChunk, navigate]);
 
@@ -1004,7 +1004,7 @@ function App() {
             <Library
               items={libraryItems}
               isLoading={isLoadingLibrary}
-              isItemLoading={isLibraryItemLoading}
+              loadingItemId={loadingLibraryItemId}
               onOpenItem={handleOpenLibraryItem}
             />
           </div>

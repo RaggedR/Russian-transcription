@@ -10,7 +10,7 @@ export function StreakBadge({ currentStreak, completedToday, freezesRemaining }:
     tooltipParts.push(`${currentStreak} day streak`);
   }
   if (!completedToday) {
-    tooltipParts.push('Complete a chunk to extend!');
+    tooltipParts.push(currentStreak > 0 ? 'Complete a chunk to extend!' : 'Complete a chunk to start a streak!');
   } else {
     tooltipParts.push("Today's goal complete!");
   }

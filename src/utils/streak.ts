@@ -61,9 +61,12 @@ export function computeStreakState(
 
   // Only walk backward if there are completion dates to find
   // (avoids consuming freezes when there's no streak to preserve)
-  while (dateSet.size > 0) {
+  // Max 400 iterations (~13 months) as a safety bound against corrupted data
+  let steps = 0;
+  while (dateSet.size > 0 && steps++ < 400) {
     if (dateSet.has(cursor)) {
       streak++;
+      dateSet.delete(cursor); // shrink set so loop terminates
       cursor = previousDay(cursor);
       continue;
     }

@@ -3,7 +3,7 @@ import type { LibraryItem } from '../services/api';
 interface LibraryProps {
   items: LibraryItem[];
   isLoading: boolean;
-  isItemLoading: boolean;
+  loadingItemId: string | null;
   onOpenItem: (item: LibraryItem) => void;
 }
 
@@ -20,10 +20,10 @@ function formatDuration(seconds: number): string {
 function truncateTitle(title: string, maxLen = 40): string {
   if (title.length <= maxLen) return title;
   const truncated = title.slice(0, maxLen).replace(/\s+\S*$/, '');
-  return truncated + '...';
+  return (truncated || title.slice(0, maxLen)) + '...';
 }
 
-export function Library({ items, isLoading, isItemLoading, onOpenItem }: LibraryProps) {
+export function Library({ items, isLoading, loadingItemId, onOpenItem }: LibraryProps) {
   // Find most recent video and most recent text (items are sorted by createdAt desc)
   const latestVideo = items.find(i => i.contentType === 'video') ?? null;
   const latestText = items.find(i => i.contentType === 'text') ?? null;
@@ -48,10 +48,10 @@ export function Library({ items, isLoading, isItemLoading, onOpenItem }: Library
           <button
             data-testid="cached-video-btn"
             onClick={() => onOpenItem(latestVideo)}
-            disabled={isItemLoading}
+            disabled={loadingItemId !== null}
             className="px-4 py-3 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 hover:border-purple-400 transition-colors text-sm text-gray-700 disabled:opacity-50 disabled:cursor-wait text-left"
           >
-            {isItemLoading ? (
+            {loadingItemId === latestVideo.sessionId ? (
               <span className="flex items-center justify-center gap-2">
                 <span className="inline-block animate-spin rounded-full h-4 w-4 border-2 border-purple-500 border-t-transparent"></span>
                 Loading...
@@ -73,10 +73,10 @@ export function Library({ items, isLoading, isItemLoading, onOpenItem }: Library
           <button
             data-testid="cached-text-btn"
             onClick={() => onOpenItem(latestText)}
-            disabled={isItemLoading}
+            disabled={loadingItemId !== null}
             className="px-4 py-3 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 hover:border-emerald-400 transition-colors text-sm text-gray-700 disabled:opacity-50 disabled:cursor-wait text-left"
           >
-            {isItemLoading ? (
+            {loadingItemId === latestText.sessionId ? (
               <span className="flex items-center justify-center gap-2">
                 <span className="inline-block animate-spin rounded-full h-4 w-4 border-2 border-emerald-500 border-t-transparent"></span>
                 Loading...

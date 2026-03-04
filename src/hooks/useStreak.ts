@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import type { StreakData } from '../types';
 import { getLocalDateString, computeStreakState } from '../utils/streak';
 import {
@@ -68,12 +68,11 @@ export function useStreak(userId: string | null) {
     return () => { signal.cancelled = true; };
   }, [userId]);
 
-  // Compute derived state on every render
+  // Compute derived state (memoized to avoid recomputing on unrelated re-renders)
   const today = getLocalDateString();
-  const state = computeStreakState(
-    streakData.completionDates,
-    streakData.longestStreak,
-    today,
+  const state = useMemo(
+    () => computeStreakState(streakData.completionDates, streakData.longestStreak, today),
+    [streakData.completionDates, streakData.longestStreak, today],
   );
 
   const recordCompletion = useCallback(() => {

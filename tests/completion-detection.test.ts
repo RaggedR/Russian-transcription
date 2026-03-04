@@ -12,7 +12,12 @@ function makeTranscript(duration: number): Transcript {
   };
 }
 
-/** Simulate playback ticks using integer math to avoid floating-point drift. */
+/**
+ * Simulate playback ticks using integer math to avoid floating-point drift.
+ * @param handler - The time update handler to call
+ * @param fromSec - Start time in seconds (ticks at 0.1s intervals)
+ * @param toSec - End time in seconds (inclusive)
+ */
 function simulateTicks(
   handler: (time: number) => void,
   fromSec: number,

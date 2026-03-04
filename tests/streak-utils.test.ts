@@ -172,4 +172,12 @@ describe('computeStreakState', () => {
     const result = computeStreakState(dates, 0, TODAY);
     expect(result.currentStreak).toBe(2);
   });
+
+  it('terminates with future-only dates (regression: unbounded loop)', () => {
+    // All dates are in the future — loop should terminate, not hang
+    const futureDates = ['2026-04-01', '2026-04-02'];
+    const result = computeStreakState(futureDates, 0, TODAY);
+    expect(result.currentStreak).toBe(0);
+    expect(result.completedToday).toBe(false);
+  });
 });
