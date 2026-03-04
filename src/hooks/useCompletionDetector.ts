@@ -1,4 +1,4 @@
-import { useRef, useCallback } from 'react';
+import { useRef, useCallback, useEffect } from 'react';
 import type { Transcript } from '../types';
 
 /**
@@ -16,7 +16,7 @@ export function useCompletionDetector(
   const playedTimeRef = useRef(0);
   const firedRef = useRef(false);
   const onCompleteRef = useRef(onComplete);
-  onCompleteRef.current = onComplete;
+  useEffect(() => { onCompleteRef.current = onComplete; });
 
   const handleTimeUpdate = useCallback((time: number) => {
     if (!transcript || firedRef.current) return;
